@@ -2,8 +2,14 @@
  * Cloudflare Pages Function — /api/chat  (website-bubble template)
  *
  * Copy this file to your project's functions/api/chat.js.
- * Set ANTHROPIC_API_KEY as an encrypted secret in Cloudflare Pages.
- * Optionally set TAVILY_API_KEY for service-research enrichment.
+ *
+ * Anthropic (default): set ANTHROPIC_API_KEY as an encrypted secret in
+ *   Cloudflare Pages → Settings → Environment Variables.
+ *
+ * Ollama: set OLLAMA_HOST to a publicly reachable Ollama endpoint
+ *   (localhost is NOT reachable from Cloudflare Workers — use a tunnel
+ *   such as ngrok, Cloudflare Tunnel, or a hosted Ollama service).
+ *   Optionally set OLLAMA_MODEL (default: llama3.2).
  *
  * Edit SYSTEM_PROMPT to match your business / use case.
  */
@@ -25,16 +31,51 @@ Lead capture:
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+function toOllamaMessages(messages, systemPrompt) {
+  const result = [{ role: 'system', content: systemPrompt }];
+  for (const m of messages) {
+    const content = Array.isArray(m.content)
+      ? m.content.filter(b => b.type === 'text').map(b => b.text).join('')
+      : (m.content || '');
+    const images = Array.isArray(m.content)
+      ? m.content.filter(b => b.type === 'image').map(b => b.source?.data)
+      : [];
+    const msg = { role: m.role, content };
+    if (images.length) msg.images = images;
+    result.push(msg);
+  }
+  return result;
+}
+
+// Re-stream Ollama NDJSON as Anthropic-compatible SSE so bubble.js works unchanged.
+function ollamaNdjsonToSseStream(ndjsonStream) {
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  const transform = new TransformStream({
+    transform(chunk, controller) {
+      buf += decoder.decode(chunk, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const evt = JSON.parse(line);
+          const text = evt.message?.content;
+          if (text) {
+            const sseEvt = { type: 'content_block_delta', delta: { type: 'text_delta', text } };
+            controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(sseEvt)}\n\n`));
+          }
+        } catch { /* skip malformed */ }
+      }
+    },
+  });
+
+  return ndjsonStream.pipeThrough(transform);
+}
+
 export async function onRequestPost(context) {
   const { request, env } = context;
-
-  const apiKey = env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return new Response(
-      JSON.stringify({ error: 'API key not configured on server.' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    );
-  }
 
   let body;
   try { body = await request.json(); }
@@ -50,6 +91,43 @@ export async function onRequestPost(context) {
     return new Response(
       JSON.stringify({ error: 'messages array required.' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  const sseHeaders = {
+    'Content-Type':      'text/event-stream',
+    'Cache-Control':     'no-cache',
+    'X-Accel-Buffering': 'no',
+  };
+
+  // ── Ollama path ──────────────────────────────────────────────────────────
+  const ollamaHost  = env.OLLAMA_HOST  || '';
+  const ollamaModel = env.OLLAMA_MODEL || 'llama3.2';
+
+  if (ollamaHost) {
+    const ollamaMessages = toOllamaMessages(messages, SYSTEM_PROMPT);
+    const upstream = await fetch(`${ollamaHost}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: ollamaModel, messages: ollamaMessages, stream: true }),
+    });
+
+    if (!upstream.ok) {
+      return new Response(
+        JSON.stringify({ error: `Ollama error: ${upstream.statusText}` }),
+        { status: upstream.status, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    return new Response(ollamaNdjsonToSseStream(upstream.body), { headers: sseHeaders });
+  }
+
+  // ── Anthropic path ───────────────────────────────────────────────────────
+  const apiKey = env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return new Response(
+      JSON.stringify({ error: 'API key not configured on server.' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }
 
@@ -72,11 +150,5 @@ export async function onRequestPost(context) {
     );
   }
 
-  return new Response(upstream.body, {
-    headers: {
-      'Content-Type':      'text/event-stream',
-      'Cache-Control':     'no-cache',
-      'X-Accel-Buffering': 'no',
-    },
-  });
+  return new Response(upstream.body, { headers: sseHeaders });
 }

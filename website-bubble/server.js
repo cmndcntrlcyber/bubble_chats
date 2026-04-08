@@ -25,6 +25,11 @@ const PORT         = process.env.PORT || 3000;
 const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
 const MODEL         = 'claude-haiku-4-5-20251001';
 
+// Ollama — set OLLAMA_HOST to switch to a local LLM (no API key needed).
+// OLLAMA_HOST must be a publicly reachable URL; localhost only works for local dev.
+const OLLAMA_HOST  = process.env.OLLAMA_HOST  || '';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
+
 const SYSTEM_PROMPT = `You are a helpful assistant for [YOUR COMPANY NAME].
 [DESCRIBE YOUR COMPANY, SERVICES, AND HOW TO HANDLE VISITOR QUERIES.]
 
@@ -89,12 +94,27 @@ app.post('/api/playwright-fill', express.json(), (req, res) => {
   });
 });
 
-// ── /api/chat — SSE proxy to Anthropic ───────────────────────────────────────
+// ── Ollama helpers ────────────────────────────────────────────────────────────
+
+function toOllamaMessages(messages, systemPrompt) {
+  const result = [{ role: 'system', content: systemPrompt }];
+  for (const m of messages) {
+    const content = Array.isArray(m.content)
+      ? m.content.filter(b => b.type === 'text').map(b => b.text).join('')
+      : (m.content || '');
+    const images = Array.isArray(m.content)
+      ? m.content.filter(b => b.type === 'image').map(b => b.source?.data)
+      : [];
+    const msg = { role: m.role, content };
+    if (images.length) msg.images = images;
+    result.push(msg);
+  }
+  return result;
+}
+
+// ── /api/chat — SSE proxy (Anthropic or Ollama) ───────────────────────────────
 
 app.post('/api/chat', express.json(), async (req, res) => {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured.' });
-
   const { messages } = req.body;
   if (!Array.isArray(messages) || messages.length === 0)
     return res.status(400).json({ error: 'messages array required.' });
@@ -103,6 +123,58 @@ app.post('/api/chat', express.json(), async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
+
+  // ── Ollama path ──
+  if (OLLAMA_HOST) {
+    try {
+      const ollamaMessages = toOllamaMessages(messages, SYSTEM_PROMPT);
+      const upstream = await fetch(`${OLLAMA_HOST}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: OLLAMA_MODEL, messages: ollamaMessages, stream: true }),
+      });
+
+      if (!upstream.ok) {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: `Ollama: ${upstream.statusText}` })}\n\n`);
+        return res.end();
+      }
+
+      const reader  = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      req.on('close', () => reader.cancel());
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const evt = JSON.parse(line);
+            const text = evt.message?.content;
+            if (text) {
+              const sseEvt = { type: 'content_block_delta', delta: { type: 'text_delta', text } };
+              res.write(`data: ${JSON.stringify(sseEvt)}\n\n`);
+            }
+          } catch { /* skip */ }
+        }
+      }
+      return res.end();
+    } catch (err) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+      return res.end();
+    }
+  }
+
+  // ── Anthropic path ──
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    res.write(`data: ${JSON.stringify({ type: 'error', message: 'ANTHROPIC_API_KEY not configured.' })}\n\n`);
+    return res.end();
+  }
 
   try {
     const upstream = await fetch(ANTHROPIC_API, {
