@@ -1,0 +1,20 @@
+{
+  "name": "website-bubble",
+  "version": "1.0.0",
+  "description": "Drop-in AI chat widget with contact form auto-fill, Tavily search, and Playwright automation",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "dependencies": {
+    "dotenv": "^17.4.1",
+    "express": "^4.21.2",
+    "playwright": "^1.49.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}

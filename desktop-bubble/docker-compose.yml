@@ -1,0 +1,11 @@
+services:
+  desktop-bubble:
+    build: .
+    image: desktop-bubble:latest
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+    restart: unless-stopped
