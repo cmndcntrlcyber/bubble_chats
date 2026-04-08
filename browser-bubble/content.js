@@ -6,11 +6,13 @@
 
   // ── Constants ──────────────────────────────────────────────────────────────
 
-  const MODELS = [
+  const CLAUDE_MODELS = [
     { label: 'Haiku 4.5  — fast',     id: 'claude-haiku-4-5-20251001' },
     { label: 'Sonnet 4.6 — balanced', id: 'claude-sonnet-4-6' },
     { label: 'Opus 4.6   — powerful', id: 'claude-opus-4-6' },
   ];
+
+  let activeModels = CLAUDE_MODELS; // updated async once storage is read
 
   const CSS = `
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -276,13 +278,27 @@
   `;
   shadow.appendChild(panel);
 
-  // Populate model selector
+  // Populate model selector — initially Claude, updated async after storage read
   const modelSelect = panel.querySelector('#model-select');
-  MODELS.forEach((m, i) => {
-    const opt = document.createElement('option');
-    opt.value = i;
-    opt.textContent = m.label;
-    modelSelect.appendChild(opt);
+
+  function populateModels(models) {
+    activeModels = models;
+    modelSelect.innerHTML = '';
+    models.forEach((m, i) => {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = m.label;
+      modelSelect.appendChild(opt);
+    });
+  }
+
+  populateModels(CLAUDE_MODELS);
+
+  chrome.storage.local.get(['provider', 'ollamaModel'], ({ provider, ollamaModel }) => {
+    if (provider === 'ollama') {
+      const label = ollamaModel ? `Ollama — ${ollamaModel}` : 'Ollama';
+      populateModels([{ label, id: ollamaModel || 'llama3.2' }]);
+    }
   });
 
   const chat      = panel.querySelector('#chat');
@@ -398,7 +414,7 @@
     getPort().postMessage({
       type: 'SEND',
       messages: history,
-      model: MODELS[parseInt(modelSelect.value)].id,
+      model: activeModels[parseInt(modelSelect.value)].id,
     });
   }
 

@@ -1,0 +1,39 @@
+{
+  "productName": "windows-desktop-bubble",
+  "version": "0.1.0",
+  "identifier": "com.c3s.windows-desktop-bubble",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "bubble",
+        "title": "AI Bubble",
+        "width": 420,
+        "height": 560,
+        "minWidth": 320,
+        "minHeight": 400,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "transparent": true,
+        "resizable": false,
+        "center": false,
+        "x": 40,
+        "y": 40,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

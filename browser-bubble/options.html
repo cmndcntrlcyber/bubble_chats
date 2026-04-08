@@ -29,7 +29,7 @@
     .subtitle { color: #a6adc8; font-size: 13px; margin-bottom: 28px; }
     label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
     .hint { color: #a6adc8; font-size: 11px; margin-bottom: 8px; }
-    input[type="password"], input[type="text"] {
+    input[type="password"], input[type="text"], input[type="url"], select.field {
       width: 100%;
       background: #2e2e4a;
       border: 1px solid rgba(255,255,255,0.1);
@@ -41,7 +41,7 @@
       font-family: monospace;
       margin-bottom: 12px;
     }
-    input:focus { border-color: #fab387; }
+    input:focus, select.field:focus { border-color: #fab387; }
     .row { display: flex; gap: 8px; }
     button {
       flex: 1;
@@ -52,11 +52,15 @@
       border: none;
       cursor: pointer;
     }
-    #btn-save { background: #fab387; color: #1c1c2e; }
-    #btn-save:hover { background: #89b4fa; }
-    #btn-clear { background: #2e2e4a; color: #f38ba8; border: 1px solid rgba(243,139,168,0.2); }
-    #btn-clear:hover { background: rgba(243,139,168,0.1); }
-    #status {
+    .btn-primary  { background: #fab387; color: #1c1c2e; }
+    .btn-primary:hover { background: #89b4fa; }
+    .btn-danger   { background: #2e2e4a; color: #f38ba8; border: 1px solid rgba(243,139,168,0.2); }
+    .btn-danger:hover { background: rgba(243,139,168,0.1); }
+    .btn-ghost    { background: none; border: none; color: #a6adc8; font-size: 11px; padding: 0 0 12px; cursor: pointer; flex: none; width: auto; }
+    .btn-ghost:hover { color: #cdd6f4; }
+    .btn-action   { background: #313155; color: #cdd6f4; border: 1px solid rgba(255,255,255,0.1); }
+    .btn-action:hover { background: #3a3a6a; }
+    .status-line {
       margin-top: 16px;
       font-size: 12px;
       min-height: 18px;
@@ -67,31 +71,89 @@
     .divider { border: none; border-top: 1px solid rgba(255,255,255,0.06); margin: 24px 0; }
     .info { font-size: 12px; color: #a6adc8; line-height: 1.6; }
     .info a { color: #fab387; }
-    #show-toggle { background: none; border: none; color: #a6adc8; font-size: 11px; padding: 0 0 12px; cursor: pointer; flex: none; width: auto; }
-    #show-toggle:hover { color: #cdd6f4; }
+    .hidden { display: none !important; }
+    /* Provider selector pill */
+    #provider-row { display: flex; gap: 8px; margin-bottom: 20px; }
+    #provider-row button {
+      flex: 1; padding: 8px; border-radius: 8px; font-size: 12px; font-weight: 600;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: #2e2e4a; color: #a6adc8; cursor: pointer;
+    }
+    #provider-row button.active { background: #fab387; color: #1c1c2e; border-color: #fab387; }
+    /* Ollama model fetch row */
+    #ollama-fetch-row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px; }
+    #ollama-fetch-row select { flex: 1; margin-bottom: 0; }
+    #btn-fetch-models { flex: none; width: auto; padding: 10px 14px; font-size: 12px; }
   </style>
 </head>
 <body>
   <div class="card">
     <div class="logo">◉</div>
     <h1>AI Bubble</h1>
-    <p class="subtitle">Floating Claude assistant for your browser</p>
+    <p class="subtitle">Floating AI assistant for your browser</p>
 
-    <label for="api-key">Anthropic API Key</label>
-    <p class="hint">Your key is stored locally and never sent anywhere except api.anthropic.com</p>
-    <input type="password" id="api-key" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
-    <div class="row">
-      <button id="show-toggle">show</button>
-      <button id="btn-save">Save key</button>
-      <button id="btn-clear">Remove</button>
+    <!-- Provider selector -->
+    <label>LLM Provider</label>
+    <div id="provider-row">
+      <button id="btn-provider-anthropic" class="active" data-provider="anthropic">Anthropic (Claude)</button>
+      <button id="btn-provider-ollama" data-provider="ollama">Ollama (local)</button>
     </div>
-    <div id="status"></div>
+
+    <!-- Anthropic section -->
+    <div id="section-anthropic">
+      <label for="api-key">Anthropic API Key</label>
+      <p class="hint">Stored locally — only sent to api.anthropic.com</p>
+      <input type="password" id="api-key" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
+      <div class="row">
+        <button id="show-toggle" class="btn-ghost">show</button>
+        <button id="btn-save" class="btn-primary">Save key</button>
+        <button id="btn-clear" class="btn-danger">Remove</button>
+      </div>
+      <div id="status" class="status-line"></div>
+    </div>
+
+    <!-- Ollama section -->
+    <div id="section-ollama" class="hidden">
+      <label for="ollama-host">Ollama Host</label>
+      <p class="hint">URL of your running Ollama instance</p>
+      <input type="url" id="ollama-host" placeholder="http://localhost:11434" autocomplete="off" spellcheck="false">
+
+      <label for="ollama-model-input">Model Name</label>
+      <p class="hint">Type a model name or fetch the list from Ollama</p>
+      <input type="text" id="ollama-model-input" placeholder="llama3.2" autocomplete="off" spellcheck="false">
+
+      <div id="ollama-fetch-row">
+        <select id="ollama-model-list" class="field" style="display:none"></select>
+        <button id="btn-fetch-models" class="btn-action">Fetch models</button>
+      </div>
+
+      <div class="row">
+        <button id="ollama-save" class="btn-primary">Save</button>
+        <button id="ollama-clear" class="btn-danger">Reset</button>
+      </div>
+      <div id="ollama-status" class="status-line"></div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Tavily section -->
+    <label for="tavily-key">Tavily API Key <span style="font-weight:400;color:#a6adc8">(optional)</span></label>
+    <p class="hint">Prepends live web search results to every LLM request. Key stored locally.</p>
+    <input type="password" id="tavily-key" placeholder="tvly-..." autocomplete="off" spellcheck="false">
+    <div class="row">
+      <button id="tavily-show" class="btn-ghost">show</button>
+      <button id="tavily-save" class="btn-primary">Save key</button>
+      <button id="tavily-clear" class="btn-danger">Remove</button>
+    </div>
+    <div id="tavily-status" class="status-line"></div>
 
     <hr class="divider">
     <p class="info">
       The bubble appears on every page. Click <strong>◉</strong> to open the chat panel.<br><br>
       <strong>Screenshot</strong> captures the visible tab and attaches it to your next message.<br><br>
-      Get a key at <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a>
+      Claude keys: <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a><br>
+      Ollama docs: <a href="https://ollama.com" target="_blank">ollama.com</a><br>
+      Tavily keys: <a href="https://tavily.com" target="_blank">tavily.com</a>
     </p>
   </div>
   <script src="options.js"></script>

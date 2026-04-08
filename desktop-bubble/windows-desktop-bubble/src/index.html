@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Bubble</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="panel">
+    <!-- Header -->
+    <div id="panel-header">
+      <span id="icon">◉</span>
+      <div id="title-block">
+        <span id="title-label">AI Bubble</span>
+        <span id="subtitle-label">Windows assistant</span>
+      </div>
+      <select id="model-select">
+        <option value="claude-haiku-4-5-20251001">Haiku 4.5 — fast</option>
+        <option value="claude-sonnet-4-6">Sonnet 4.6 — balanced</option>
+        <option value="claude-opus-4-6">Opus 4.6 — powerful</option>
+      </select>
+      <button id="btn-clear" title="Clear conversation">clear</button>
+      <button id="btn-settings" title="Settings">⚙</button>
+    </div>
+
+    <!-- Chat area -->
+    <div id="chat-scroll">
+      <div id="chat-box"></div>
+    </div>
+
+    <!-- Input area -->
+    <div id="input-area">
+      <div id="ss-row">
+        <span id="ss-label">No screenshot attached</span>
+        <button id="btn-screenshot">📷 Screenshot</button>
+      </div>
+      <div id="send-row">
+        <textarea id="text-input" placeholder="Ask anything about your screen…" rows="2"></textarea>
+        <button id="btn-send">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings overlay -->
+  <div id="settings-overlay" class="hidden">
+    <div id="settings-card">
+      <h2>Settings</h2>
+
+      <label>LLM Provider</label>
+      <div id="provider-toggle">
+        <button id="btn-prov-anthropic" class="prov-btn active">Anthropic</button>
+        <button id="btn-prov-ollama" class="prov-btn">Ollama</button>
+      </div>
+
+      <!-- Anthropic section -->
+      <div id="sec-anthropic">
+        <label style="margin-top:12px">Anthropic API Key</label>
+        <input type="password" id="inp-api-key" placeholder="sk-ant-..." autocomplete="off">
+        <div class="btn-row">
+          <button id="save-api-key">Save</button>
+          <button id="clear-api-key" class="danger">Remove</button>
+        </div>
+      </div>
+
+      <!-- Ollama section -->
+      <div id="sec-ollama" class="hidden">
+        <label style="margin-top:12px">Ollama Host</label>
+        <input type="text" id="inp-ollama-host" placeholder="http://localhost:11434" autocomplete="off">
+        <label>Model</label>
+        <input type="text" id="inp-ollama-model" placeholder="llama3.2" autocomplete="off">
+        <div class="btn-row">
+          <button id="btn-fetch-ollama">Fetch models</button>
+          <button id="save-ollama">Save</button>
+        </div>
+        <select id="ollama-model-list" style="display:none;width:100%;margin-top:8px"></select>
+      </div>
+
+      <label style="margin-top:16px">Tavily API Key <span class="optional">(optional)</span></label>
+      <input type="password" id="inp-tavily-key" placeholder="tvly-..." autocomplete="off">
+      <div class="btn-row">
+        <button id="save-tavily-key">Save</button>
+        <button id="clear-tavily-key" class="danger">Remove</button>
+      </div>
+      <button id="close-settings" style="margin-top:20px;width:100%">Done</button>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

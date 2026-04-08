@@ -5,7 +5,7 @@
   "description": "Floating Claude AI assistant with screenshot troubleshooting",
 
   "permissions": ["activeTab", "tabs", "storage", "scripting"],
-  "host_permissions": ["<all_urls>", "https://api.anthropic.com/*"],
+  "host_permissions": ["<all_urls>", "https://api.anthropic.com/*", "https://api.tavily.com/*"],
 
   "background": {
     "service_worker": "background.js"

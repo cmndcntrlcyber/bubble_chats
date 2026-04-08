@@ -14,14 +14,23 @@ import threading
 import base64
 import os
 import sys
+import json
+import urllib.request
+import urllib.error
 
 import anthropic
+
+OLLAMA_HOST  = os.environ.get("OLLAMA_HOST", "")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "")
 
 MODELS = [
     ("Haiku 4.5  — fast",    "claude-haiku-4-5-20251001"),
     ("Sonnet 4.6 — balanced", "claude-sonnet-4-6"),
     ("Opus 4.6   — powerful", "claude-opus-4-6"),
 ]
+if OLLAMA_HOST and OLLAMA_MODEL:
+    MODELS.append((f"Ollama — {OLLAMA_MODEL}", f"ollama/{OLLAMA_MODEL}"))
+
 DEFAULT_MODEL_INDEX = 0
 
 BUBBLE_SIZE = 64
@@ -212,6 +221,34 @@ CSS = f"""
 """
 
 
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+
+SYSTEM_PROMPT = (
+    "You are a helpful desktop assistant for Pop_OS! Linux. "
+    "Be concise and practical. When analyzing screenshots, "
+    "identify issues clearly and suggest specific fixes. "
+    "Use plain text — no markdown headers, minimal bullets."
+)
+
+
+def fetch_tavily_context(query: str, key: str) -> str:
+    """Search Tavily and return formatted results, or '' on any error."""
+    payload = json.dumps({"api_key": key, "query": query, "max_results": 3}).encode()
+    req = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+        return "\n\n".join(
+            f"{x['title']}: {x['content']}" for x in data.get("results", [])
+        )
+    except Exception:
+        return ""
+
+
 def take_screenshot() -> str | None:
     """Capture full screen via PIL, return base64-encoded PNG."""
     try:
@@ -235,10 +272,74 @@ def apply_css():
     )
 
 
+def to_ollama_messages(messages: list, system_prompt: str) -> list:
+    """Convert Anthropic-format messages to Ollama's simpler format."""
+    result = [{"role": "system", "content": system_prompt}]
+    for m in messages:
+        if isinstance(m["content"], list):
+            text = "".join(b["text"] for b in m["content"] if b.get("type") == "text")
+            images = [b["source"]["data"] for b in m["content"] if b.get("type") == "image"]
+        else:
+            text = m["content"] or ""
+            images = []
+        msg = {"role": m["role"], "content": text}
+        if images:
+            msg["images"] = images
+        result.append(msg)
+    return result
+
+
+class OllamaThread(threading.Thread):
+    """Streams a response from a local Ollama instance off the GTK main thread."""
+
+    def __init__(self, messages, model, host, on_chunk, on_done, on_error, system_prompt=None):
+        super().__init__(daemon=True)
+        self.messages = messages
+        self.model = model  # already stripped of 'ollama/' prefix by caller
+        self.host = host
+        self.on_chunk = on_chunk
+        self.on_done = on_done
+        self.on_error = on_error
+        self.system_prompt = system_prompt or SYSTEM_PROMPT
+
+    def run(self):
+        try:
+            ollama_msgs = to_ollama_messages(self.messages, self.system_prompt)
+            payload = json.dumps({
+                "model": self.model,
+                "messages": ollama_msgs,
+                "stream": True,
+            }).encode()
+            req = urllib.request.Request(
+                f"{self.host}/api/chat",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            full = []
+            with urllib.request.urlopen(req) as resp:
+                for raw_line in resp:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = json.loads(line)
+                    except Exception:
+                        continue
+                    chunk = evt.get("message", {}).get("content", "")
+                    if chunk:
+                        full.append(chunk)
+                        GLib.idle_add(self.on_chunk, chunk)
+                    if evt.get("done"):
+                        break
+            GLib.idle_add(self.on_done, "".join(full))
+        except Exception as e:
+            GLib.idle_add(self.on_error, str(e))
+
+
 class AIThread(threading.Thread):
     """Runs Claude API call off the main GTK thread."""
 
-    def __init__(self, client, messages, model, on_chunk, on_done, on_error):
+    def __init__(self, client, messages, model, on_chunk, on_done, on_error, system_prompt=None):
         super().__init__(daemon=True)
         self.client = client
         self.messages = messages
@@ -246,6 +347,7 @@ class AIThread(threading.Thread):
         self.on_chunk = on_chunk
         self.on_done = on_done
         self.on_error = on_error
+        self.system_prompt = system_prompt or SYSTEM_PROMPT
 
     def run(self):
         try:
@@ -253,12 +355,7 @@ class AIThread(threading.Thread):
             with self.client.messages.stream(
                 model=self.model,
                 max_tokens=1024,
-                system=(
-                    "You are a helpful desktop assistant for Pop_OS! Linux. "
-                    "Be concise and practical. When analyzing screenshots, "
-                    "identify issues clearly and suggest specific fixes. "
-                    "Use plain text — no markdown headers, minimal bullets."
-                ),
+                system=self.system_prompt,
                 messages=self.messages,
             ) as stream:
                 for text in stream.text_stream:
@@ -522,15 +619,36 @@ class ChatPanel(Gtk.Window):
         self.current_ai_label = self._add_ai_msg_start()
         self._accumulated = []
 
+        # Enrich system prompt with Tavily web search if key is set
+        system_prompt = SYSTEM_PROMPT
+        if TAVILY_API_KEY and text:
+            context = fetch_tavily_context(text, TAVILY_API_KEY)
+            if context:
+                system_prompt = SYSTEM_PROMPT + f"\n\nWeb search context:\n{context}"
+
         selected_model = MODELS[self.model_combo.get_active()][1]
-        AIThread(
-            client=self.client,
-            messages=self.history,
-            model=selected_model,
-            on_chunk=self._on_chunk,
-            on_done=self._on_ai_done,
-            on_error=self._on_ai_error,
-        ).start()
+
+        if selected_model.startswith("ollama/"):
+            ollama_model = selected_model[len("ollama/"):]
+            OllamaThread(
+                messages=self.history,
+                model=ollama_model,
+                host=OLLAMA_HOST or "http://localhost:11434",
+                on_chunk=self._on_chunk,
+                on_done=self._on_ai_done,
+                on_error=self._on_ai_error,
+                system_prompt=system_prompt,
+            ).start()
+        else:
+            AIThread(
+                client=self.client,
+                messages=self.history,
+                model=selected_model,
+                on_chunk=self._on_chunk,
+                on_done=self._on_ai_done,
+                on_error=self._on_ai_error,
+                system_prompt=system_prompt,
+            ).start()
 
     def _on_chunk(self, text: str):
         self._accumulated.append(text)
