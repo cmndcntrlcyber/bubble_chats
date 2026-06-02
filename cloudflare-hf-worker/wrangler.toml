@@ -1,0 +1,15 @@
+name               = "bubble-hf-worker"
+main               = "src/index.js"
+compatibility_date = "2025-01-01"
+account_id         = "REDACTED_ACCOUNT_ID"
+
+[vars]
+HF_DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+HF_CONTEXT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+# Comma-separated origins allowed — never use bare * for production.
+# Include your site domain, chrome-extension:// (prefix match), and tauri://localhost.
+ALLOWED_ORIGINS  = "https://yourdomain.com,chrome-extension://,tauri://localhost"
+
+# Secrets — set with:
+#   npx wrangler secret put HF_TOKEN
+#   npx wrangler secret put BUBBLE_SHARED_SECRET

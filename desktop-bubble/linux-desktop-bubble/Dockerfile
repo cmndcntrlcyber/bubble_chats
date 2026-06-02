@@ -18,8 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir anthropic pillow
+RUN pip3 install --no-cache-dir -r requirements.txt pillow
 
 COPY bubble.py .
+COPY .env .
 
 CMD ["python3", "bubble.py"]

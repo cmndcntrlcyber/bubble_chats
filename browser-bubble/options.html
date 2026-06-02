@@ -97,6 +97,7 @@
     <div id="provider-row">
       <button id="btn-provider-anthropic" class="active" data-provider="anthropic">Anthropic (Claude)</button>
       <button id="btn-provider-ollama" data-provider="ollama">Ollama (local)</button>
+      <button id="btn-provider-huggingface" data-provider="huggingface">HF (CF Worker)</button>
     </div>
 
     <!-- Anthropic section -->
@@ -133,6 +134,41 @@
       </div>
       <div id="ollama-status" class="status-line"></div>
     </div>
+
+    <!-- HuggingFace / CF Worker section -->
+    <div id="section-hf" class="hidden">
+      <label for="hf-worker-url">Worker URL</label>
+      <p class="hint">URL of your deployed bubble-hf-worker (see cloudflare-hf-worker/)</p>
+      <input type="url" id="hf-worker-url" placeholder="https://bubble-hf-worker.account.workers.dev" autocomplete="off" spellcheck="false">
+
+      <label for="hf-worker-secret">Shared Secret</label>
+      <p class="hint">Matches BUBBLE_SHARED_SECRET set on the Worker</p>
+      <input type="password" id="hf-worker-secret" placeholder="your-shared-secret" autocomplete="off" spellcheck="false">
+      <div class="row" style="margin-bottom:12px">
+        <button id="hf-secret-show" class="btn-ghost">show</button>
+      </div>
+
+      <label for="hf-chat-model">Model ID</label>
+      <p class="hint">Any model on the HuggingFace Inference Router (public or private)</p>
+      <input type="text" id="hf-chat-model" placeholder="meta-llama/Llama-3.1-8B-Instruct" autocomplete="off" spellcheck="false">
+
+      <div class="row">
+        <button id="hf-save" class="btn-primary">Save</button>
+        <button id="hf-clear" class="btn-danger">Reset</button>
+      </div>
+      <div id="hf-status" class="status-line"></div>
+    </div>
+
+    <hr class="divider">
+
+    <!-- Contextualizing agent toggle (all providers) -->
+    <label>Contextualizing Agent <span style="font-weight:400;color:#a6adc8">(optional)</span></label>
+    <p class="hint">Runs a second open-source model in parallel, showing a collapsible "🔍 Context" annotation beneath each reply. Requires HF Worker URL + secret configured above.</p>
+    <div class="row" style="margin-bottom:0">
+      <button id="btn-context-toggle" class="btn-action" style="flex:none;width:auto;padding:8px 16px;font-size:12px">Enable</button>
+      <span id="context-toggle-status" style="align-self:center;font-size:12px;color:#a6adc8;margin-left:8px">Disabled</span>
+    </div>
+    <div id="context-status" class="status-line"></div>
 
     <hr class="divider">
 

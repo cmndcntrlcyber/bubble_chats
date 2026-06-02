@@ -31,6 +31,9 @@ chrome.runtime.onConnect.addListener((port) => {
       case 'GET_KEY':
         await handleGetKey(port);
         break;
+      case 'FETCH_OLLAMA_MODELS':
+        await handleFetchOllamaModels(port);
+        break;
     }
   });
 });
@@ -43,6 +46,20 @@ chrome.action.onClicked.addListener(() => {
 async function handleGetKey(port) {
   const { apiKey } = await chrome.storage.local.get('apiKey');
   port.postMessage({ type: 'KEY_STATUS', hasKey: !!apiKey });
+}
+
+async function handleFetchOllamaModels(port) {
+  const { ollamaHost } = await chrome.storage.local.get('ollamaHost');
+  const host = ollamaHost || 'http://localhost:11434';
+  try {
+    const res = await fetch(`${host}/api/tags`);
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    const models = (data.models || []).map(m => m.name);
+    port.postMessage({ type: 'OLLAMA_MODELS', models });
+  } catch (err) {
+    port.postMessage({ type: 'OLLAMA_MODELS_ERROR', error: err.message });
+  }
 }
 
 async function tavilySearch(query, key) {
@@ -94,6 +111,77 @@ function toOllamaMessages(messages, systemPrompt) {
   return result;
 }
 
+// Shared SSE reader that parses Anthropic-compatible SSE chunks and posts them to the port.
+// Used by both handleSendHF and can be reused for any Anthropic-SSE source.
+async function readAnthropicSseStream(response, port, chunkType = 'CHUNK') {
+  const reader  = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const raw = line.slice(6).trim();
+      if (!raw || raw === '[DONE]') continue;
+      try {
+        const evt = JSON.parse(raw);
+        if (evt.type === 'content_block_delta' && evt.delta?.text)
+          port.postMessage({ type: chunkType, text: evt.delta.text });
+      } catch { /* skip malformed */ }
+    }
+  }
+}
+
+async function handleSendHF(port, messages, model, workerUrl, workerSecret, systemPrompt) {
+  const hfMessages = [
+    { role: 'system', content: systemPrompt },
+    ...messages.map(m => ({
+      role: m.role,
+      content: Array.isArray(m.content)
+        ? m.content.filter(b => b.type === 'text').map(b => b.text).join('')
+        : (m.content || ''),
+    })),
+  ];
+  try {
+    const response = await fetch(workerUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Bubble-Auth': workerSecret },
+      body: JSON.stringify({ model, messages: hfMessages, stream: true }),
+    });
+    if (!response.ok) {
+      port.postMessage({ type: 'ERROR', error: `HF Worker: ${response.statusText}` });
+      return;
+    }
+    await readAnthropicSseStream(response, port, 'CHUNK');
+    port.postMessage({ type: 'DONE' });
+  } catch (err) {
+    port.postMessage({ type: 'ERROR', error: err.message });
+  }
+}
+
+async function handleSendContext(port, messages, workerUrl, workerSecret) {
+  const hfMessages = messages.map(m => ({
+    role: m.role,
+    content: Array.isArray(m.content)
+      ? m.content.filter(b => b.type === 'text').map(b => b.text).join('')
+      : (m.content || ''),
+  }));
+  try {
+    const response = await fetch(workerUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Bubble-Auth': workerSecret },
+      body: JSON.stringify({ messages: hfMessages, mode: 'context', stream: true }),
+    });
+    if (!response.ok) return; // silent — context is non-critical
+    await readAnthropicSseStream(response, port, 'CONTEXT_CHUNK');
+    port.postMessage({ type: 'CONTEXT_DONE' });
+  } catch { /* silent */ }
+}
+
 async function handleSendOllama(port, messages, model, host, systemPrompt) {
   const ollamaMessages = toOllamaMessages(messages, systemPrompt);
   try {
@@ -136,13 +224,23 @@ async function handleSendOllama(port, messages, model, host, systemPrompt) {
 }
 
 async function handleSend(port, { messages, model }) {
-  const { apiKey, tavilyKey, provider, ollamaHost } =
-    await chrome.storage.local.get(['apiKey', 'tavilyKey', 'provider', 'ollamaHost']);
+  const {
+    apiKey, tavilyKey, provider, ollamaHost,
+    hfWorkerUrl, hfWorkerSecret, hfChatModel, hfContextEnabled,
+  } = await chrome.storage.local.get([
+    'apiKey', 'tavilyKey', 'provider', 'ollamaHost',
+    'hfWorkerUrl', 'hfWorkerSecret', 'hfChatModel', 'hfContextEnabled',
+  ]);
 
   const isOllama = provider === 'ollama';
+  const isHF     = provider === 'huggingface';
 
-  if (!isOllama && !apiKey) {
+  if (!isOllama && !isHF && !apiKey) {
     port.postMessage({ type: 'NO_KEY' });
+    return;
+  }
+  if (isHF && (!hfWorkerUrl || !hfWorkerSecret)) {
+    port.postMessage({ type: 'ERROR', error: 'HF Worker URL or secret not configured in options.' });
     return;
   }
 
@@ -159,12 +257,27 @@ async function handleSend(port, { messages, model }) {
     }
   }
 
+  if (isHF) {
+    await handleSendHF(
+      port, messages,
+      hfChatModel || 'meta-llama/Llama-3.1-8B-Instruct',
+      hfWorkerUrl, hfWorkerSecret, systemPrompt
+    );
+    if (hfContextEnabled) {
+      handleSendContext(port, messages, hfWorkerUrl, hfWorkerSecret);
+    }
+    return;
+  }
+
   if (isOllama) {
     await handleSendOllama(
       port, messages, model,
       ollamaHost || 'http://localhost:11434',
       systemPrompt
     );
+    if (hfContextEnabled && hfWorkerUrl && hfWorkerSecret) {
+      handleSendContext(port, messages, hfWorkerUrl, hfWorkerSecret);
+    }
     return;
   }
 
@@ -218,6 +331,9 @@ async function handleSend(port, { messages, model }) {
     }
 
     port.postMessage({ type: 'DONE' });
+    if (hfContextEnabled && hfWorkerUrl && hfWorkerSecret) {
+      handleSendContext(port, messages, hfWorkerUrl, hfWorkerSecret);
+    }
   } catch (err) {
     port.postMessage({ type: 'ERROR', error: err.message });
   }

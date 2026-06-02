@@ -2,10 +2,12 @@
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
-const btnProviderAnthropic = document.getElementById('btn-provider-anthropic');
-const btnProviderOllama    = document.getElementById('btn-provider-ollama');
-const sectionAnthropic     = document.getElementById('section-anthropic');
-const sectionOllama        = document.getElementById('section-ollama');
+const btnProviderAnthropic  = document.getElementById('btn-provider-anthropic');
+const btnProviderOllama     = document.getElementById('btn-provider-ollama');
+const btnProviderHF         = document.getElementById('btn-provider-huggingface');
+const sectionAnthropic      = document.getElementById('section-anthropic');
+const sectionOllama         = document.getElementById('section-ollama');
+const sectionHF             = document.getElementById('section-hf');
 
 const input       = document.getElementById('api-key');
 const btnSave     = document.getElementById('btn-save');
@@ -21,6 +23,18 @@ const ollamaSave  = document.getElementById('ollama-save');
 const ollamaClear = document.getElementById('ollama-clear');
 const ollamaStatus = document.getElementById('ollama-status');
 
+const hfWorkerUrlInput  = document.getElementById('hf-worker-url');
+const hfWorkerSecretInput = document.getElementById('hf-worker-secret');
+const hfSecretShow      = document.getElementById('hf-secret-show');
+const hfChatModelInput  = document.getElementById('hf-chat-model');
+const hfSave            = document.getElementById('hf-save');
+const hfClear           = document.getElementById('hf-clear');
+const hfStatus          = document.getElementById('hf-status');
+
+const btnContextToggle      = document.getElementById('btn-context-toggle');
+const contextToggleStatus   = document.getElementById('context-toggle-status');
+const contextStatus         = document.getElementById('context-status');
+
 const tavilyInput  = document.getElementById('tavily-key');
 const tavilySave   = document.getElementById('tavily-save');
 const tavilyClear  = document.getElementById('tavily-clear');
@@ -31,26 +45,37 @@ const tavilyStatus = document.getElementById('tavily-status');
 
 function setProvider(p) {
   const isOllama = p === 'ollama';
-  btnProviderAnthropic.classList.toggle('active', !isOllama);
+  const isHF     = p === 'huggingface';
+  btnProviderAnthropic.classList.toggle('active', !isOllama && !isHF);
   btnProviderOllama.classList.toggle('active', isOllama);
-  sectionAnthropic.classList.toggle('hidden', isOllama);
+  btnProviderHF.classList.toggle('active', isHF);
+  sectionAnthropic.classList.toggle('hidden', isOllama || isHF);
   sectionOllama.classList.toggle('hidden', !isOllama);
+  sectionHF.classList.toggle('hidden', !isHF);
   chrome.storage.local.set({ provider: p });
 }
 
 btnProviderAnthropic.addEventListener('click', () => setProvider('anthropic'));
 btnProviderOllama.addEventListener('click',    () => setProvider('ollama'));
+btnProviderHF.addEventListener('click',        () => setProvider('huggingface'));
 
 // ── Load stored values ────────────────────────────────────────────────────────
 
 chrome.storage.local.get(
-  ['apiKey', 'tavilyKey', 'provider', 'ollamaHost', 'ollamaModel'],
-  ({ apiKey, tavilyKey, provider, ollamaHost: storedHost, ollamaModel }) => {
-    if (apiKey)      { input.value = apiKey; showStatus('Key loaded', 'ok'); }
-    if (tavilyKey)   { tavilyInput.value = tavilyKey; showTavilyStatus('Key loaded', 'ok'); }
-    if (storedHost)  ollamaHost.value = storedHost;
-    if (ollamaModel) ollamaModelInput.value = ollamaModel;
-    if (provider === 'ollama') setProvider('ollama');
+  ['apiKey', 'tavilyKey', 'provider', 'ollamaHost', 'ollamaModel',
+   'hfWorkerUrl', 'hfWorkerSecret', 'hfChatModel', 'hfContextEnabled'],
+  ({ apiKey, tavilyKey, provider, ollamaHost: storedHost, ollamaModel,
+     hfWorkerUrl, hfWorkerSecret, hfChatModel, hfContextEnabled }) => {
+    if (apiKey)       { input.value = apiKey; showStatus('Key loaded', 'ok'); }
+    if (tavilyKey)    { tavilyInput.value = tavilyKey; showTavilyStatus('Key loaded', 'ok'); }
+    if (storedHost)   ollamaHost.value = storedHost;
+    if (ollamaModel)  ollamaModelInput.value = ollamaModel;
+    if (hfWorkerUrl)    hfWorkerUrlInput.value = hfWorkerUrl;
+    if (hfWorkerSecret) hfWorkerSecretInput.value = hfWorkerSecret;
+    if (hfChatModel)    hfChatModelInput.value = hfChatModel;
+    updateContextToggle(!!hfContextEnabled);
+    if (provider === 'ollama')       setProvider('ollama');
+    else if (provider === 'huggingface') setProvider('huggingface');
   }
 );
 
@@ -123,6 +148,53 @@ ollamaClear.addEventListener('click', () => {
   });
 });
 
+// ── HuggingFace / CF Worker handlers ─────────────────────────────────────────
+
+hfSave.addEventListener('click', () => {
+  const url    = hfWorkerUrlInput.value.trim();
+  const secret = hfWorkerSecretInput.value.trim();
+  const model  = hfChatModelInput.value.trim() || 'meta-llama/Llama-3.1-8B-Instruct';
+  if (!url)    { showHfStatus('Enter the Worker URL', 'err'); return; }
+  if (!secret) { showHfStatus('Enter the shared secret', 'err'); return; }
+  chrome.storage.local.set({ hfWorkerUrl: url, hfWorkerSecret: secret, hfChatModel: model }, () => {
+    showHfStatus('Saved ✓', 'ok');
+  });
+});
+
+hfClear.addEventListener('click', () => {
+  chrome.storage.local.remove(['hfWorkerUrl', 'hfWorkerSecret', 'hfChatModel'], () => {
+    hfWorkerUrlInput.value = '';
+    hfWorkerSecretInput.value = '';
+    hfChatModelInput.value = '';
+    showHfStatus('Reset', 'ok');
+  });
+});
+
+hfSecretShow.addEventListener('click', () => {
+  hfWorkerSecretInput.type = hfWorkerSecretInput.type === 'password' ? 'text' : 'password';
+  hfSecretShow.textContent = hfWorkerSecretInput.type === 'password' ? 'show' : 'hide';
+});
+
+// ── Contextualizing agent toggle ──────────────────────────────────────────────
+
+function updateContextToggle(enabled) {
+  btnContextToggle.textContent = enabled ? 'Disable' : 'Enable';
+  contextToggleStatus.textContent = enabled ? 'Enabled' : 'Disabled';
+  contextToggleStatus.style.color = enabled ? '#a6e3a1' : '#a6adc8';
+}
+
+btnContextToggle.addEventListener('click', () => {
+  chrome.storage.local.get('hfContextEnabled', ({ hfContextEnabled }) => {
+    const next = !hfContextEnabled;
+    chrome.storage.local.set({ hfContextEnabled: next }, () => {
+      updateContextToggle(next);
+      contextStatus.textContent = next ? 'Context agent enabled' : 'Context agent disabled';
+      contextStatus.className = 'status-line status-ok';
+      setTimeout(() => { contextStatus.textContent = ''; }, 3000);
+    });
+  });
+});
+
 // ── Tavily key handlers ───────────────────────────────────────────────────────
 
 tavilySave.addEventListener('click', () => {
@@ -158,4 +230,10 @@ function showTavilyStatus(msg, type) {
   tavilyStatus.textContent = msg;
   tavilyStatus.className = 'status-line ' + (type === 'ok' ? 'status-ok' : 'status-err');
   setTimeout(() => { tavilyStatus.textContent = ''; }, 3000);
+}
+
+function showHfStatus(msg, type) {
+  hfStatus.textContent = msg;
+  hfStatus.className = 'status-line ' + (type === 'ok' ? 'status-ok' : 'status-err');
+  setTimeout(() => { hfStatus.textContent = ''; }, 3000);
 }

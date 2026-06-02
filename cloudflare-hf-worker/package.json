@@ -1,0 +1,13 @@
+{
+  "name": "bubble-hf-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker — secure HuggingFace Inference proxy for bubble-chats",
+  "private": true,
+  "scripts": {
+    "dev":    "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3"
+  }
+}

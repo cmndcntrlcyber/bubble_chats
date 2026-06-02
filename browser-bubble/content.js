@@ -47,6 +47,8 @@
       right: 24px;
       width: 400px;
       height: 540px;
+      min-width: 280px;
+      min-height: 350px;
       background: rgba(5, 15, 60, 0.95);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
@@ -139,7 +141,7 @@
       border-left: 3px solid rgb(9, 36, 165);
       border-radius: 0 12px 12px 0;
       padding: 8px 12px;
-      max-width: 85%;
+      max-width: 96%;
       word-break: break-word;
       white-space: pre-wrap;
       line-height: 1.55;
@@ -211,7 +213,7 @@
       font-family: inherit;
       resize: none;
       min-height: 36px;
-      max-height: 80px;
+      max-height: 200px;
       line-height: 1.4;
     }
     #text-input:focus { border-color: rgb(9,36,165); box-shadow: 0 0 0 2px rgba(9,36,165,0.25); }
@@ -231,6 +233,64 @@
     }
     #btn-send:hover { background: rgb(30, 70, 220); }
     #btn-send:disabled { background: rgba(9,36,165,0.3); color: rgba(255,255,255,0.4); cursor: default; }
+
+    /* Contextualizing agent */
+    .msg-context {
+      align-self: stretch;
+      background: rgba(100,200,100,0.04);
+      border-left: 3px solid rgba(100,200,100,0.45);
+      border-radius: 0 8px 8px 0;
+      margin: 0;
+      font-size: 12px;
+      overflow: hidden;
+    }
+    .ctx-header {
+      padding: 5px 10px; color: rgba(255,255,255,0.45);
+      cursor: pointer; user-select: none; font-size: 11px;
+    }
+    .ctx-header:hover { color: rgba(255,255,255,0.7); }
+    .ctx-body {
+      padding: 0 10px 8px; color: rgba(255,255,255,0.5);
+      font-style: italic; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .ctx-collapsed .ctx-body { display: none; }
+
+    /* Resize corner handles */
+    .resize-corner {
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      z-index: 5;
+    }
+    .rc-nw { top: 0; left: 0; cursor: nw-resize; }
+    .rc-ne { top: 0; right: 0; cursor: ne-resize; }
+    .rc-sw { bottom: 0; left: 0; cursor: sw-resize; }
+    .rc-se { bottom: 0; right: 0; cursor: se-resize; }
+    .rc-se::after {
+      content: ''; position: absolute; bottom: 4px; right: 4px;
+      width: 8px; height: 8px;
+      border-right: 2px solid rgba(9,36,165,0.7);
+      border-bottom: 2px solid rgba(9,36,165,0.7);
+    }
+    .rc-sw::after {
+      content: ''; position: absolute; bottom: 4px; left: 4px;
+      width: 8px; height: 8px;
+      border-left: 2px solid rgba(9,36,165,0.7);
+      border-bottom: 2px solid rgba(9,36,165,0.7);
+    }
+    .rc-ne::after {
+      content: ''; position: absolute; top: 4px; right: 4px;
+      width: 8px; height: 8px;
+      border-right: 2px solid rgba(9,36,165,0.7);
+      border-top: 2px solid rgba(9,36,165,0.7);
+    }
+    .rc-nw::after {
+      content: ''; position: absolute; top: 4px; left: 4px;
+      width: 8px; height: 8px;
+      border-left: 2px solid rgba(9,36,165,0.7);
+      border-top: 2px solid rgba(9,36,165,0.7);
+    }
   `;
 
   // ── DOM ────────────────────────────────────────────────────────────────────
@@ -257,6 +317,10 @@
   panel.id = 'panel';
   panel.classList.add('hidden');
   panel.innerHTML = `
+    <div class="resize-corner rc-nw"></div>
+    <div class="resize-corner rc-ne"></div>
+    <div class="resize-corner rc-sw"></div>
+    <div class="resize-corner rc-se"></div>
     <div id="header">
       <span id="header-icon">◉</span>
       <span id="header-title">AI Bubble</span>
@@ -296,8 +360,10 @@
 
   chrome.storage.local.get(['provider', 'ollamaModel'], ({ provider, ollamaModel }) => {
     if (provider === 'ollama') {
-      const label = ollamaModel ? `Ollama — ${ollamaModel}` : 'Ollama';
-      populateModels([{ label, id: ollamaModel || 'llama3.2' }]);
+      // Show saved model immediately as fallback, then fetch live list
+      const fallback = ollamaModel || 'llama3.2';
+      populateModels([{ label: `Ollama — ${fallback}`, id: fallback }]);
+      getPort().postMessage({ type: 'FETCH_OLLAMA_MODELS' });
     }
   });
 
@@ -315,6 +381,8 @@
   let isStreaming = false;
   let currentAIEl = null;
   let accumulated = '';
+  let currentContextEl = null;
+  let accumulatedContext = '';
 
   // ── Port ───────────────────────────────────────────────────────────────────
 
@@ -353,6 +421,27 @@
         btnSend.disabled = false;
         currentAIEl = null;
         break;
+      case 'OLLAMA_MODELS':
+        if (msg.models && msg.models.length) {
+          populateModels(msg.models.map(name => ({ label: `Ollama — ${name}`, id: name })));
+        }
+        break;
+      case 'OLLAMA_MODELS_ERROR':
+        // keep existing fallback model in the dropdown
+        break;
+      case 'CONTEXT_CHUNK':
+        if (!currentContextEl) {
+          currentContextEl = createContextEl();
+          accumulatedContext = '';
+          chat.appendChild(currentContextEl);
+        }
+        accumulatedContext += msg.text;
+        currentContextEl.querySelector('.ctx-body').textContent = accumulatedContext;
+        scrollBottom();
+        break;
+      case 'CONTEXT_DONE':
+        currentContextEl = null;
+        break;
       case 'SCREENSHOT_DATA':
         pendingScreenshot = msg.data;
         ssStatus.textContent = '✓ Screenshot attached';
@@ -380,6 +469,21 @@
 
   function scrollBottom() {
     chat.scrollTop = chat.scrollHeight;
+  }
+
+  function createContextEl() {
+    const el = document.createElement('div');
+    el.className = 'msg-context';
+    el.innerHTML = `
+      <div class="ctx-header">🔍 Context <span class="ctx-chevron">▾</span></div>
+      <div class="ctx-body"></div>
+    `;
+    el.querySelector('.ctx-header').addEventListener('click', () => {
+      el.classList.toggle('ctx-collapsed');
+      el.querySelector('.ctx-chevron').textContent =
+        el.classList.contains('ctx-collapsed') ? '▸' : '▾';
+    });
+    return el;
   }
 
   // ── Actions ────────────────────────────────────────────────────────────────
@@ -435,9 +539,23 @@
     addMsg('system', 'Conversation cleared.');
   }
 
+  let textareaExtraH = 0;
+
   function autoResize() {
     textInput.style.height = 'auto';
-    textInput.style.height = Math.min(textInput.scrollHeight, 80) + 'px';
+    const newH = Math.min(textInput.scrollHeight, 200);
+    textInput.style.height = newH + 'px';
+    const newExtra = Math.max(0, newH - 36);
+    const delta = newExtra - textareaExtraH;
+    textareaExtraH = newExtra;
+    if (delta !== 0 && !panel.classList.contains('hidden')) {
+      const r = panel.getBoundingClientRect();
+      const prevPanelH = panelH;
+      panelH = Math.max(350, panelH + delta);
+      const actualDelta = panelH - prevPanelH;
+      panel.style.height = panelH + 'px';
+      panel.style.top = Math.max(8, r.top - actualDelta) + 'px';
+    }
   }
 
   // ── Bubble drag ────────────────────────────────────────────────────────────
@@ -445,6 +563,7 @@
   let dragging = false, ox = 0, oy = 0, didDrag = false;
   let bx = window.innerWidth - 24 - 56;
   let by = window.innerHeight - 24 - 56;
+  let panelW = 400, panelH = 540;
 
   function applyBubblePos() {
     bubble.style.left  = bx + 'px';
@@ -454,11 +573,13 @@
   }
 
   function applyPanelPos() {
-    const pw = 400, ph = 540, gap = 10;
-    let px = bx - pw - gap;
+    const gap = 10;
+    let px = bx - panelW - gap;
     if (px < 8) px = bx + 56 + gap;
-    let py = by - ph / 2 + 28;
-    py = Math.max(8, Math.min(py, window.innerHeight - ph - 8));
+    let py = by - panelH / 2 + 28;
+    py = Math.max(8, Math.min(py, window.innerHeight - panelH - 8));
+    panel.style.width  = panelW + 'px';
+    panel.style.height = panelH + 'px';
     panel.style.left   = px + 'px';
     panel.style.top    = py + 'px';
     panel.style.right  = 'unset';
@@ -485,7 +606,45 @@
     if (!panel.classList.contains('hidden')) applyPanelPos();
   });
 
-  document.addEventListener('mouseup', () => { dragging = false; });
+  document.addEventListener('mouseup', () => { dragging = false; resizing = false; });
+
+  // ── Panel resize ──────────────────────────────────────────────────────────
+
+  let resizing = false, resizeDir = '';
+  let rStartX = 0, rStartY = 0, rStartW = 0, rStartH = 0, rStartPX = 0, rStartPY = 0;
+
+  ['nw', 'ne', 'sw', 'se'].forEach(dir => {
+    panel.querySelector('.rc-' + dir).addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      resizing = true;
+      resizeDir = dir;
+      rStartX = e.clientX;
+      rStartY = e.clientY;
+      const r = panel.getBoundingClientRect();
+      rStartW = r.width; rStartH = r.height;
+      rStartPX = r.left; rStartPY = r.top;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!resizing) return;
+    const dx = e.clientX - rStartX;
+    const dy = e.clientY - rStartY;
+    let w = rStartW, h = rStartH, px = rStartPX, py = rStartPY;
+    if (resizeDir.includes('e')) w = Math.max(280, rStartW + dx);
+    if (resizeDir.includes('w')) { w = Math.max(280, rStartW - dx); px = rStartPX + rStartW - w; }
+    if (resizeDir.includes('s')) h = Math.max(350, rStartH + dy);
+    if (resizeDir.includes('n')) { h = Math.max(350, rStartH - dy); py = rStartPY + rStartH - h; }
+    panelW = w; panelH = h;
+    panel.style.width  = w + 'px';
+    panel.style.height = h + 'px';
+    panel.style.left   = px + 'px';
+    panel.style.top    = py + 'px';
+    panel.style.right  = 'unset';
+    panel.style.bottom = 'unset';
+  });
 
   bubble.addEventListener('click', () => {
     if (didDrag) { didDrag = false; return; }

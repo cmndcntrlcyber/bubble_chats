@@ -18,18 +18,47 @@ import json
 import urllib.request
 import urllib.error
 
+from dotenv import load_dotenv
+
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+
 import anthropic
 
 OLLAMA_HOST  = os.environ.get("OLLAMA_HOST", "")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "")
+
+HF_WORKER_URL     = os.environ.get("HF_WORKER_URL", "")
+HF_WORKER_SECRET  = os.environ.get("HF_WORKER_SECRET", "")
+HF_CHAT_MODEL     = os.environ.get("HF_CHAT_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+HF_CONTEXT_ENABLED = os.environ.get("HF_CONTEXT_ENABLED", "").lower() == "true"
+
+def _fetch_ollama_models(host):
+    """Return list of (label, id) tuples for available Ollama models, or [] on failure."""
+    try:
+        req = urllib.request.Request(f"{host.rstrip('/')}/api/tags")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+            return [
+                (f"Ollama — {m['name']}", f"ollama/{m['name']}")
+                for m in data.get("models", [])
+            ]
+    except Exception:
+        return []
 
 MODELS = [
     ("Haiku 4.5  — fast",    "claude-haiku-4-5-20251001"),
     ("Sonnet 4.6 — balanced", "claude-sonnet-4-6"),
     ("Opus 4.6   — powerful", "claude-opus-4-6"),
 ]
-if OLLAMA_HOST and OLLAMA_MODEL:
-    MODELS.append((f"Ollama — {OLLAMA_MODEL}", f"ollama/{OLLAMA_MODEL}"))
+if OLLAMA_HOST:
+    _ollama_models = _fetch_ollama_models(OLLAMA_HOST)
+    if _ollama_models:
+        MODELS.extend(_ollama_models)
+    elif OLLAMA_MODEL:
+        MODELS.append((f"Ollama — {OLLAMA_MODEL}", f"ollama/{OLLAMA_MODEL}"))
+
+if HF_WORKER_URL and HF_WORKER_SECRET:
+    MODELS.append((f"HF — {HF_CHAT_MODEL.split('/')[-1]}", f"hf/{HF_CHAT_MODEL}"))
 
 DEFAULT_MODEL_INDEX = 0
 
@@ -208,6 +237,17 @@ CSS = f"""
     background: rgba(255,100,80,0.1);
 }}
 
+.message-context {{
+    background: rgba(100,200,100,0.06);
+    border-left: 3px solid rgba(100,200,100,0.4);
+    border-radius: 0 8px 8px 0;
+    padding: 6px 12px;
+    color: rgba(232,234,246,0.55);
+    font-size: 11px;
+    font-style: italic;
+    margin: 2px 0 2px 0;
+}}
+
 #model-badge {{
     background: rgba(9,36,165,0.15);
     border: 1px solid rgba(9,36,165,0.3);
@@ -336,6 +376,70 @@ class OllamaThread(threading.Thread):
             GLib.idle_add(self.on_error, str(e))
 
 
+class HFThread(threading.Thread):
+    """Streams from the bubble-hf-worker Cloudflare Worker (HuggingFace Inference)."""
+
+    def __init__(self, messages, model, worker_url, worker_secret,
+                 on_chunk, on_done, on_error, system_prompt=None, mode='chat'):
+        super().__init__(daemon=True)
+        self.messages = messages
+        self.model = model
+        self.worker_url = worker_url
+        self.worker_secret = worker_secret
+        self.on_chunk = on_chunk
+        self.on_done = on_done
+        self.on_error = on_error
+        self.system_prompt = system_prompt or SYSTEM_PROMPT
+        self.mode = mode
+
+    def run(self):
+        hf_messages = [{"role": "system", "content": self.system_prompt}] + [
+            {
+                "role": m["role"],
+                "content": (
+                    "".join(b["text"] for b in m["content"] if b.get("type") == "text")
+                    if isinstance(m["content"], list) else (m["content"] or "")
+                ),
+            }
+            for m in self.messages
+        ]
+        payload = json.dumps({
+            "model": self.model,
+            "messages": hf_messages,
+            "stream": True,
+            "mode": self.mode,
+        }).encode()
+        req = urllib.request.Request(
+            self.worker_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Bubble-Auth": self.worker_secret,
+            },
+        )
+        try:
+            full = []
+            with urllib.request.urlopen(req) as resp:
+                for raw_line in resp:
+                    line = raw_line.strip().decode("utf-8")
+                    if not line.startswith("data: "):
+                        continue
+                    raw = line[6:].strip()
+                    if not raw or raw == "[DONE]":
+                        continue
+                    try:
+                        evt = json.loads(raw)
+                        text = (evt.get("delta") or {}).get("text", "")
+                        if text:
+                            full.append(text)
+                            GLib.idle_add(self.on_chunk, text)
+                    except Exception:
+                        continue
+            GLib.idle_add(self.on_done, "".join(full))
+        except Exception as e:
+            GLib.idle_add(self.on_error, str(e))
+
+
 class AIThread(threading.Thread):
     """Runs Claude API call off the main GTK thread."""
 
@@ -384,7 +488,7 @@ class ChatPanel(Gtk.Window):
         self.set_decorated(False)
         self.set_keep_above(True)
         self.set_default_size(PANEL_WIDTH, PANEL_HEIGHT)
-        self.set_resizable(False)
+        self.set_resizable(True)
         self.set_skip_taskbar_hint(True)
         self.set_skip_pager_hint(True)
 
@@ -396,7 +500,10 @@ class ChatPanel(Gtk.Window):
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         outer.set_name("panel")
-        self.add(outer)
+        overlay = Gtk.Overlay()
+        overlay.add(outer)
+        self.add(overlay)
+        self._overlay = overlay
 
         # ── Header ──
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -474,21 +581,52 @@ class ChatPanel(Gtk.Window):
         # Text + send row
         send_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
 
-        self.text_input = Gtk.Entry()
+        text_scroll = Gtk.ScrolledWindow()
+        text_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        text_scroll.set_min_content_height(36)
+        text_scroll.set_max_content_height(200)
+        text_scroll.set_hexpand(True)
+
+        self.text_input = Gtk.TextView()
         self.text_input.set_name("text-input")
-        self.text_input.set_placeholder_text("Ask anything about your screen…")
+        self.text_input.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.text_input.set_hexpand(True)
-        self.text_input.connect("activate", self._on_send)
+        self.text_input.connect("key-press-event", self._on_key_press)
+        text_scroll.add(self.text_input)
 
         self.btn_send = Gtk.Button(label="Send")
         self.btn_send.set_name("btn-send")
         self.btn_send.connect("clicked", self._on_send)
 
-        send_row.pack_start(self.text_input, True, True, 0)
+        send_row.pack_start(text_scroll, True, True, 0)
         send_row.pack_end(self.btn_send, False, False, 0)
         input_area.pack_start(send_row, False, False, 0)
 
         outer.pack_start(input_area, False, False, 0)
+
+        # Corner resize handles (overlay)
+        for edge, halign, valign in [
+            (Gdk.WindowEdge.NORTH_WEST, Gtk.Align.START, Gtk.Align.START),
+            (Gdk.WindowEdge.NORTH_EAST, Gtk.Align.END,   Gtk.Align.START),
+            (Gdk.WindowEdge.SOUTH_WEST, Gtk.Align.START, Gtk.Align.END),
+            (Gdk.WindowEdge.SOUTH_EAST, Gtk.Align.END,   Gtk.Align.END),
+        ]:
+            eb = Gtk.EventBox()
+            eb.set_size_request(20, 20)
+            eb.set_halign(halign)
+            eb.set_valign(valign)
+            eb.connect("button-press-event", self._on_resize_press, edge)
+            cursor_type = {
+                Gdk.WindowEdge.NORTH_WEST: Gdk.CursorType.TOP_LEFT_CORNER,
+                Gdk.WindowEdge.NORTH_EAST: Gdk.CursorType.TOP_RIGHT_CORNER,
+                Gdk.WindowEdge.SOUTH_WEST: Gdk.CursorType.BOTTOM_LEFT_CORNER,
+                Gdk.WindowEdge.SOUTH_EAST: Gdk.CursorType.BOTTOM_RIGHT_CORNER,
+            }[edge]
+            eb.connect("realize", lambda w, ct=cursor_type: w.get_window().set_cursor(
+                Gdk.Cursor.new_for_display(Gdk.Display.get_default(), ct)
+            ))
+            self._overlay.add_overlay(eb)
+
         self.show_all()
 
         self._add_system_msg("Ready. Take a screenshot or just ask a question.")
@@ -520,10 +658,11 @@ class ChatPanel(Gtk.Window):
         lbl = Gtk.Label(label=text)
         lbl.get_style_context().add_class("message-system")
         lbl.set_halign(Gtk.Align.CENTER)
+        lbl.set_hexpand(True)
         lbl.set_line_wrap(True)
         lbl.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        lbl.set_max_width_chars(50)
-        self.chat_box.pack_start(lbl, False, False, 2)
+        lbl.set_width_chars(1)
+        self.chat_box.pack_start(lbl, False, True, 2)
         self.chat_box.show_all()
         self._scroll_bottom()
 
@@ -531,11 +670,12 @@ class ChatPanel(Gtk.Window):
         lbl = Gtk.Label(label=text)
         lbl.get_style_context().add_class("message-user")
         lbl.set_halign(Gtk.Align.END)
+        lbl.set_hexpand(True)
         lbl.set_line_wrap(True)
         lbl.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        lbl.set_max_width_chars(40)
+        lbl.set_width_chars(1)
         lbl.set_selectable(True)
-        self.chat_box.pack_start(lbl, False, False, 2)
+        self.chat_box.pack_start(lbl, False, True, 2)
         self.chat_box.show_all()
         self._scroll_bottom()
 
@@ -543,14 +683,37 @@ class ChatPanel(Gtk.Window):
         lbl = Gtk.Label(label="")
         lbl.get_style_context().add_class("message-ai")
         lbl.set_halign(Gtk.Align.START)
+        lbl.set_hexpand(True)
         lbl.set_line_wrap(True)
         lbl.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
-        lbl.set_max_width_chars(46)
+        lbl.set_width_chars(1)
         lbl.set_selectable(True)
-        self.chat_box.pack_start(lbl, False, False, 2)
+        self.chat_box.pack_start(lbl, False, True, 2)
         self.chat_box.show_all()
         self._scroll_bottom()
         return lbl
+
+    def _add_context_msg_start(self) -> Gtk.Label:
+        lbl = Gtk.Label(label="🔍 Context: …")
+        lbl.get_style_context().add_class("message-context")
+        lbl.set_halign(Gtk.Align.START)
+        lbl.set_hexpand(True)
+        lbl.set_line_wrap(True)
+        lbl.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        lbl.set_width_chars(1)
+        lbl.set_selectable(True)
+        self.chat_box.pack_start(lbl, False, True, 2)
+        self.chat_box.show_all()
+        self._scroll_bottom()
+        return lbl
+
+    def _on_context_chunk(self, text: str, label: Gtk.Label):
+        current = label.get_text()
+        if current == "🔍 Context: …":
+            label.set_text(f"🔍 Context: {text}")
+        else:
+            label.set_text(current + text)
+        self._scroll_bottom()
 
     def _scroll_bottom(self):
         def _do():
@@ -580,17 +743,30 @@ class ChatPanel(Gtk.Window):
             self._add_system_msg("Could not capture screen. Try: sudo apt install scrot")
         self.btn_send.set_sensitive(True)
 
+    def _on_key_press(self, widget, event):
+        if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            if not (event.state & Gdk.ModifierType.SHIFT_MASK):
+                self._on_send(widget)
+                return True
+        return False
+
+    def _on_resize_press(self, widget, event, edge):
+        if event.button == 1:
+            self.begin_resize_drag(edge, event.button, int(event.x_root), int(event.y_root), event.time)
+        return True
+
     def _on_send(self, _widget):
         if self.is_streaming:
             return
 
-        text = self.text_input.get_text().strip()
+        buf = self.text_input.get_buffer()
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False).strip()
         if not text and not self.pending_screenshot:
             return
 
         display = text or "(screenshot only)"
         self._add_user_msg(display)
-        self.text_input.set_text("")
+        buf.set_text("")
 
         # Build message content
         content = []
@@ -639,6 +815,19 @@ class ChatPanel(Gtk.Window):
                 on_error=self._on_ai_error,
                 system_prompt=system_prompt,
             ).start()
+        elif selected_model.startswith("hf/"):
+            hf_model = selected_model[len("hf/"):]
+            HFThread(
+                messages=self.history,
+                model=hf_model,
+                worker_url=HF_WORKER_URL,
+                worker_secret=HF_WORKER_SECRET,
+                on_chunk=self._on_chunk,
+                on_done=self._on_ai_done,
+                on_error=self._on_ai_error,
+                system_prompt=system_prompt,
+                mode='chat',
+            ).start()
         else:
             AIThread(
                 client=self.client,
@@ -648,6 +837,19 @@ class ChatPanel(Gtk.Window):
                 on_done=self._on_ai_done,
                 on_error=self._on_ai_error,
                 system_prompt=system_prompt,
+            ).start()
+
+        if HF_CONTEXT_ENABLED and HF_WORKER_URL and HF_WORKER_SECRET:
+            ctx_label = self._add_context_msg_start()
+            HFThread(
+                messages=self.history,
+                model=HF_CHAT_MODEL,
+                worker_url=HF_WORKER_URL,
+                worker_secret=HF_WORKER_SECRET,
+                on_chunk=lambda t, lbl=ctx_label: self._on_context_chunk(t, lbl),
+                on_done=lambda _: None,
+                on_error=lambda _: None,
+                mode='context',
             ).start()
 
     def _on_chunk(self, text: str):

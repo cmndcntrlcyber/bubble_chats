@@ -29,6 +29,7 @@
   const ACCENT           = CFG.accent           || 'rgb(9, 36, 165)';
   const ACCENT_HOVER     = CFG.accentHover      || 'rgb(30, 70, 220)';
   const CHAT_ENDPOINT    = CFG.chatEndpoint     || '/api/chat';
+  const CONTEXT_ENDPOINT = CFG.contextEndpoint  || '/api/context';
   const CONTACT_ENDPOINT = CFG.contactEndpoint  || '/api/contact';
   const WELCOME_MSG      = CFG.welcomeMsg       || 'Hello! How can I help you today?';
   const TAVILY_KEY       = CFG.tavilyKey        || '';
@@ -133,6 +134,27 @@
     }
     #btn-send:hover { background: ${ACCENT_HOVER}; }
     #btn-send:disabled { background: rgba(9,36,165,0.3); color: rgba(255,255,255,0.4); cursor: default; }
+
+    /* Contextualizing agent */
+    .msg-context {
+      align-self: stretch;
+      background: rgba(100,200,100,0.04);
+      border-left: 3px solid rgba(100,200,100,0.45);
+      border-radius: 0 8px 8px 0;
+      margin: 0;
+      font-size: 12px;
+      overflow: hidden;
+    }
+    .ctx-header {
+      padding: 5px 10px; color: rgba(255,255,255,0.45); cursor: pointer;
+      user-select: none; font-size: 11px;
+    }
+    .ctx-header:hover { color: rgba(255,255,255,0.7); }
+    .ctx-body {
+      padding: 0 10px 8px; color: rgba(255,255,255,0.5); font-style: italic;
+      line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+    }
+    .ctx-collapsed .ctx-body { display: none; }
 
     /* Contact overlay */
     #contact-overlay {
@@ -290,6 +312,8 @@
         currentAIEl.textContent = cleaned;
         history.push({ role: 'assistant', content: cleaned });
         if (match) onServiceInterest(match[1].trim());
+        // Fire contextualizing agent in parallel — non-blocking, silent on failure
+        fetchContext(history.slice(-MAX_HISTORY)).catch(() => {});
       }
 
     } catch (err) {
@@ -368,6 +392,64 @@
         addMsg('error', 'Submission failed — please use the Contact page.');
       }
     });
+  }
+
+  // ── Contextualizing agent ────────────────────────────────────────────────────
+
+  function createContextWrapper() {
+    const el = document.createElement('div');
+    el.className = 'msg-context';
+    el.innerHTML = `
+      <div class="ctx-header">🔍 Context <span class="ctx-chevron">▾</span></div>
+      <div class="ctx-body"></div>
+    `;
+    el.querySelector('.ctx-header').addEventListener('click', () => {
+      el.classList.toggle('ctx-collapsed');
+      el.querySelector('.ctx-chevron').textContent =
+        el.classList.contains('ctx-collapsed') ? '▸' : '▾';
+    });
+    return el;
+  }
+
+  async function fetchContext(messages) {
+    if (!CONTEXT_ENDPOINT) return;
+    let resp;
+    try {
+      resp = await fetch(CONTEXT_ENDPOINT, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages }),
+      });
+    } catch { return; }
+    if (!resp.ok) return;
+
+    const wrapper = createContextWrapper();
+    chat.appendChild(wrapper);
+    chat.scrollTop = chat.scrollHeight;
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '', ctxAccum = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (!raw || raw === '[DONE]') continue;
+        try {
+          const evt = JSON.parse(raw);
+          if (evt.type === 'content_block_delta' && evt.delta?.text) {
+            ctxAccum += evt.delta.text;
+            wrapper.querySelector('.ctx-body').textContent = ctxAccum;
+            chat.scrollTop = chat.scrollHeight;
+          }
+        } catch { /* skip */ }
+      }
+    }
   }
 
   function onClear() {

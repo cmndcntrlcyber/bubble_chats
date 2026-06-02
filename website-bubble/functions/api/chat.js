@@ -100,6 +100,32 @@ export async function onRequestPost(context) {
     'X-Accel-Buffering': 'no',
   };
 
+  // ── HF Worker path ───────────────────────────────────────────────────────
+  const hfWorkerUrl    = env.HF_WORKER_URL    || '';
+  const hfWorkerSecret = env.HF_WORKER_SECRET || '';
+  const hfChatModel    = env.HF_CHAT_MODEL    || 'meta-llama/Llama-3.1-8B-Instruct';
+
+  if (hfWorkerUrl) {
+    const hfMessages = messages.map(m => ({
+      role: m.role,
+      content: Array.isArray(m.content)
+        ? m.content.filter(b => b.type === 'text').map(b => b.text).join('')
+        : (m.content || ''),
+    }));
+    const upstream = await fetch(hfWorkerUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Bubble-Auth': hfWorkerSecret },
+      body: JSON.stringify({ model: hfChatModel, messages: hfMessages, stream: true }),
+    });
+    if (!upstream.ok) {
+      const err = await upstream.text().catch(() => upstream.statusText);
+      return new Response(JSON.stringify({ error: err }), {
+        status: upstream.status, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(upstream.body, { headers: sseHeaders });
+  }
+
   // ── Ollama path ──────────────────────────────────────────────────────────
   const ollamaHost  = env.OLLAMA_HOST  || '';
   const ollamaModel = env.OLLAMA_MODEL || 'llama3.2';

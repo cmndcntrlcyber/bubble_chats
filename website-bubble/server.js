@@ -30,6 +30,12 @@ const MODEL         = 'claude-haiku-4-5-20251001';
 const OLLAMA_HOST  = process.env.OLLAMA_HOST  || '';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2';
 
+// HuggingFace via Cloudflare Worker — deploy cloudflare-hf-worker/ first.
+const HF_WORKER_URL      = process.env.HF_WORKER_URL      || '';
+const HF_WORKER_SECRET   = process.env.HF_WORKER_SECRET   || '';
+const HF_CHAT_MODEL      = process.env.HF_CHAT_MODEL      || 'meta-llama/Llama-3.1-8B-Instruct';
+const HF_CONTEXT_ENABLED = process.env.HF_CONTEXT_ENABLED === 'true';
+
 const SYSTEM_PROMPT = `You are a helpful assistant for [YOUR COMPANY NAME].
 [DESCRIBE YOUR COMPANY, SERVICES, AND HOW TO HANDLE VISITOR QUERIES.]
 
@@ -124,6 +130,40 @@ app.post('/api/chat', express.json(), async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
+  // ── HF Worker path ──
+  if (HF_WORKER_URL) {
+    const hfMessages = messages.map(m => ({
+      role: m.role,
+      content: Array.isArray(m.content)
+        ? m.content.filter(b => b.type === 'text').map(b => b.text).join('')
+        : (m.content || ''),
+    }));
+    try {
+      const upstream = await fetch(HF_WORKER_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Bubble-Auth': HF_WORKER_SECRET,
+        },
+        body: JSON.stringify({ model: HF_CHAT_MODEL, messages: hfMessages, stream: true }),
+      });
+      if (!upstream.ok) throw new Error(`HF Worker: ${upstream.statusText}`);
+      // Worker already emits Anthropic-compatible SSE — pipe straight through
+      const reader  = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      req.on('close', () => reader.cancel());
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(decoder.decode(value, { stream: true }));
+      }
+      return res.end();
+    } catch (err) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+      return res.end();
+    }
+  }
+
   // ── Ollama path ──
   if (OLLAMA_HOST) {
     try {
@@ -193,6 +233,50 @@ app.post('/api/chat', express.json(), async (req, res) => {
       return res.end();
     }
 
+    const reader  = upstream.body.getReader();
+    const decoder = new TextDecoder();
+    req.on('close', () => reader.cancel());
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(decoder.decode(value, { stream: true }));
+    }
+    res.end();
+  } catch (err) {
+    res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
+    res.end();
+  }
+});
+
+// ── /api/context — contextualizing agent (HF Worker, parallel to primary chat) ─
+
+app.post('/api/context', express.json(), async (req, res) => {
+  if (!HF_WORKER_URL || !HF_CONTEXT_ENABLED)
+    return res.status(503).json({ error: 'Context agent not configured.' });
+
+  const { messages } = req.body;
+  if (!Array.isArray(messages) || messages.length === 0)
+    return res.status(400).json({ error: 'messages required.' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  const hfMessages = messages.map(m => ({
+    role: m.role,
+    content: Array.isArray(m.content)
+      ? m.content.filter(b => b.type === 'text').map(b => b.text).join('')
+      : (m.content || ''),
+  }));
+
+  try {
+    const upstream = await fetch(HF_WORKER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Bubble-Auth': HF_WORKER_SECRET },
+      body: JSON.stringify({ messages: hfMessages, mode: 'context', stream: true }),
+    });
+    if (!upstream.ok) throw new Error(`HF Worker: ${upstream.statusText}`);
     const reader  = upstream.body.getReader();
     const decoder = new TextDecoder();
     req.on('close', () => reader.cancel());
