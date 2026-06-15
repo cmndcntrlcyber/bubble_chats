@@ -3,6 +3,8 @@
 *.env
 .env.*
 !.env.example
+wrangler.toml
+!wrangler.toml.example
 
 # Node
 node_modules/

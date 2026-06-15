@@ -1,11 +1,18 @@
 name               = "bubble-hf-worker"
 main               = "src/index.js"
 compatibility_date = "2025-01-01"
-account_id         = "REDACTED_ACCOUNT_ID"
+account_id         = "Cloudflare account ID here"
 
 [vars]
+
 HF_DEFAULT_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 HF_CONTEXT_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+
+
+# Alternative models for coding tasks — uncomment to use.
+## HF_DEFAULT_MODEL = "cmndcntrlcyber/qwen14b-code-trainer-v6-gguf"
+## HF_CONTEXT_MODEL = "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled"
+
 # Comma-separated origins allowed — never use bare * for production.
 # Include your site domain, chrome-extension:// (prefix match), and tauri://localhost.
 ALLOWED_ORIGINS  = "https://yourdomain.com,chrome-extension://,tauri://localhost"
