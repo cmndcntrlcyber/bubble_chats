@@ -2,6 +2,11 @@
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
+// Display mode
+const btnModeBubble    = document.getElementById('btn-mode-bubble');
+const btnModeSidepanel = document.getElementById('btn-mode-sidepanel');
+
+// Provider
 const btnProviderAnthropic  = document.getElementById('btn-provider-anthropic');
 const btnProviderOllama     = document.getElementById('btn-provider-ollama');
 const btnProviderHF         = document.getElementById('btn-provider-huggingface');
@@ -9,12 +14,14 @@ const sectionAnthropic      = document.getElementById('section-anthropic');
 const sectionOllama         = document.getElementById('section-ollama');
 const sectionHF             = document.getElementById('section-hf');
 
+// Anthropic
 const input       = document.getElementById('api-key');
 const btnSave     = document.getElementById('btn-save');
 const btnClear    = document.getElementById('btn-clear');
 const btnShow     = document.getElementById('show-toggle');
 const status      = document.getElementById('status');
 
+// Ollama
 const ollamaHost  = document.getElementById('ollama-host');
 const ollamaModelInput = document.getElementById('ollama-model-input');
 const ollamaModelList  = document.getElementById('ollama-model-list');
@@ -23,6 +30,7 @@ const ollamaSave  = document.getElementById('ollama-save');
 const ollamaClear = document.getElementById('ollama-clear');
 const ollamaStatus = document.getElementById('ollama-status');
 
+// HuggingFace
 const hfWorkerUrlInput  = document.getElementById('hf-worker-url');
 const hfWorkerSecretInput = document.getElementById('hf-worker-secret');
 const hfSecretShow      = document.getElementById('hf-secret-show');
@@ -31,15 +39,44 @@ const hfSave            = document.getElementById('hf-save');
 const hfClear           = document.getElementById('hf-clear');
 const hfStatus          = document.getElementById('hf-status');
 
+// Page context
+const btnPageToggle     = document.getElementById('btn-page-toggle');
+const pageToggleStatus  = document.getElementById('page-toggle-status');
+const pageStatus        = document.getElementById('page-status');
+
+// Context agent
 const btnContextToggle      = document.getElementById('btn-context-toggle');
 const contextToggleStatus   = document.getElementById('context-toggle-status');
 const contextStatus         = document.getElementById('context-status');
 
+// Tavily
 const tavilyInput  = document.getElementById('tavily-key');
 const tavilySave   = document.getElementById('tavily-save');
 const tavilyClear  = document.getElementById('tavily-clear');
 const tavilyShow   = document.getElementById('tavily-show');
 const tavilyStatus = document.getElementById('tavily-status');
+
+// Conversations
+const convoStats    = document.getElementById('convo-stats');
+const convoExport   = document.getElementById('convo-export');
+const convoClearAll = document.getElementById('convo-clear-all');
+const convoStatus   = document.getElementById('convo-status');
+
+// ── Display mode toggle ──────────────────────────────────────────────────────
+
+// Hide side panel option on Firefox (no sidePanel API)
+if (typeof chrome?.sidePanel?.open !== 'function') {
+  document.getElementById('mode-row').style.display = 'none';
+}
+
+function setDisplayMode(mode) {
+  btnModeBubble.classList.toggle('active', mode === 'bubble');
+  btnModeSidepanel.classList.toggle('active', mode === 'sidepanel');
+  chrome.storage.local.set({ displayMode: mode });
+}
+
+btnModeBubble.addEventListener('click', () => setDisplayMode('bubble'));
+btnModeSidepanel.addEventListener('click', () => setDisplayMode('sidepanel'));
 
 // ── Provider toggle ───────────────────────────────────────────────────────────
 
@@ -63,9 +100,11 @@ btnProviderHF.addEventListener('click',        () => setProvider('huggingface'))
 
 chrome.storage.local.get(
   ['apiKey', 'tavilyKey', 'provider', 'ollamaHost', 'ollamaModel',
-   'hfWorkerUrl', 'hfWorkerSecret', 'hfChatModel', 'hfContextEnabled'],
+   'hfWorkerUrl', 'hfWorkerSecret', 'hfChatModel', 'hfContextEnabled',
+   'displayMode', 'pageContextDefault'],
   ({ apiKey, tavilyKey, provider, ollamaHost: storedHost, ollamaModel,
-     hfWorkerUrl, hfWorkerSecret, hfChatModel, hfContextEnabled }) => {
+     hfWorkerUrl, hfWorkerSecret, hfChatModel, hfContextEnabled,
+     displayMode, pageContextDefault }) => {
     if (apiKey)       { input.value = apiKey; showStatus('Key loaded', 'ok'); }
     if (tavilyKey)    { tavilyInput.value = tavilyKey; showTavilyStatus('Key loaded', 'ok'); }
     if (storedHost)   ollamaHost.value = storedHost;
@@ -74,6 +113,8 @@ chrome.storage.local.get(
     if (hfWorkerSecret) hfWorkerSecretInput.value = hfWorkerSecret;
     if (hfChatModel)    hfChatModelInput.value = hfChatModel;
     updateContextToggle(!!hfContextEnabled);
+    updatePageToggle(!!pageContextDefault);
+    if (displayMode === 'sidepanel') setDisplayMode('sidepanel');
     if (provider === 'ollama')       setProvider('ollama');
     else if (provider === 'huggingface') setProvider('huggingface');
   }
@@ -175,6 +216,26 @@ hfSecretShow.addEventListener('click', () => {
   hfSecretShow.textContent = hfWorkerSecretInput.type === 'password' ? 'show' : 'hide';
 });
 
+// ── Page context toggle ──────────────────────────────────────────────────────
+
+function updatePageToggle(enabled) {
+  btnPageToggle.textContent = enabled ? 'Disable' : 'Enable';
+  pageToggleStatus.textContent = enabled ? 'Enabled' : 'Disabled';
+  pageToggleStatus.style.color = enabled ? '#a6e3a1' : '#a6adc8';
+}
+
+btnPageToggle.addEventListener('click', () => {
+  chrome.storage.local.get('pageContextDefault', ({ pageContextDefault }) => {
+    const next = !pageContextDefault;
+    chrome.storage.local.set({ pageContextDefault: next }, () => {
+      updatePageToggle(next);
+      pageStatus.textContent = next ? 'Page context enabled by default' : 'Page context disabled by default';
+      pageStatus.className = 'status-line status-ok';
+      setTimeout(() => { pageStatus.textContent = ''; }, 3000);
+    });
+  });
+});
+
 // ── Contextualizing agent toggle ──────────────────────────────────────────────
 
 function updateContextToggle(enabled) {
@@ -212,6 +273,38 @@ tavilyShow.addEventListener('click', () => {
   tavilyShow.textContent = tavilyInput.type === 'password' ? 'show' : 'hide';
 });
 
+// ── Conversation management ──────────────────────────────────────────────────
+
+async function updateConvoStats() {
+  const { conversations = {} } = await chrome.storage.local.get('conversations');
+  const count = Object.keys(conversations).length;
+  const size = new Blob([JSON.stringify(conversations)]).size;
+  const sizeStr = size < 1024 ? `${size} B` : size < 1048576 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1048576).toFixed(1)} MB`;
+  convoStats.textContent = `${count} conversation${count !== 1 ? 's' : ''} stored (${sizeStr})`;
+}
+
+updateConvoStats();
+
+convoExport.addEventListener('click', async () => {
+  const { conversations = {} } = await chrome.storage.local.get('conversations');
+  const blob = new Blob([JSON.stringify(conversations, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ai-bubble-conversations-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showConvoStatus('Exported ✓', 'ok');
+});
+
+convoClearAll.addEventListener('click', () => {
+  if (!confirm('Delete all saved conversations? This cannot be undone.')) return;
+  chrome.storage.local.set({ conversations: {}, activeConversationId: null }, () => {
+    updateConvoStats();
+    showConvoStatus('All conversations cleared', 'ok');
+  });
+});
+
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 function showStatus(msg, type) {
@@ -236,4 +329,10 @@ function showHfStatus(msg, type) {
   hfStatus.textContent = msg;
   hfStatus.className = 'status-line ' + (type === 'ok' ? 'status-ok' : 'status-err');
   setTimeout(() => { hfStatus.textContent = ''; }, 3000);
+}
+
+function showConvoStatus(msg, type) {
+  convoStatus.textContent = msg;
+  convoStatus.className = 'status-line ' + (type === 'ok' ? 'status-ok' : 'status-err');
+  setTimeout(() => { convoStatus.textContent = ''; }, 3000);
 }

@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Bubble</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      background: rgba(5, 15, 60, 0.98);
+      font-family: "Inter", "Segoe UI", "Ubuntu", sans-serif;
+      font-size: 13px;
+      color: #e8eaf6;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #header {
+      background: rgb(9, 36, 165);
+      padding: 10px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    #header-icon { font-size: 18px; color: #fff; flex-shrink: 0; }
+    #header-title { font-weight: 600; font-size: 13px; color: #fff; flex: 1; }
+    #model-select {
+      background: rgba(255,255,255,0.15);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 11px;
+      padding: 3px 6px;
+      cursor: pointer;
+      outline: none;
+      max-width: 140px;
+    }
+    #model-select option { background: #050f3c; color: #e8eaf6; }
+    .hdr-btn {
+      background: transparent;
+      border: none;
+      color: rgba(255,255,255,0.75);
+      font-size: 13px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .hdr-btn:hover { color: #fff; background: rgba(255,255,255,0.15); }
+    #btn-clear { font-size: 11px; padding: 3px 8px; }
+
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      scroll-behavior: smooth;
+    }
+    #chat::-webkit-scrollbar { width: 4px; }
+    #chat::-webkit-scrollbar-track { background: transparent; }
+    #chat::-webkit-scrollbar-thumb { background: rgba(9,36,165,0.4); border-radius: 2px; }
+
+    .msg-user {
+      align-self: flex-end;
+      background: rgba(9,36,165,0.3);
+      border: 1px solid rgba(9,36,165,0.4);
+      border-radius: 12px 12px 4px 12px;
+      padding: 8px 12px;
+      max-width: 90%;
+      word-break: break-word;
+      white-space: pre-wrap;
+      color: #e8eaf6;
+    }
+    .msg-ai {
+      align-self: flex-start;
+      background: rgba(255,255,255,0.05);
+      border-left: 3px solid rgb(9, 36, 165);
+      border-radius: 0 12px 12px 0;
+      padding: 8px 12px;
+      max-width: 96%;
+      word-break: break-word;
+      white-space: pre-wrap;
+      line-height: 1.55;
+      color: #e8eaf6;
+      position: relative;
+    }
+    .msg-ai .copy-btn {
+      position: absolute; top: 4px; right: 4px;
+      background: rgba(255,255,255,0.1); border: none;
+      color: rgba(255,255,255,0.5); font-size: 11px;
+      padding: 2px 6px; border-radius: 4px; cursor: pointer;
+      opacity: 0; transition: opacity 0.15s;
+    }
+    .msg-ai:hover .copy-btn { opacity: 1; }
+    .msg-ai .copy-btn:hover { color: #fff; background: rgba(255,255,255,0.2); }
+    .msg-system {
+      align-self: center;
+      color: rgba(255,255,255,0.45);
+      font-size: 11px;
+      font-style: italic;
+      padding: 2px 0;
+    }
+    .msg-error {
+      align-self: flex-start;
+      color: #ff8a80;
+      font-size: 12px;
+      padding: 6px 10px;
+      background: rgba(255,100,80,0.1);
+      border-radius: 8px;
+      max-width: 85%;
+    }
+    .msg-context {
+      align-self: stretch;
+      background: rgba(100,200,100,0.04);
+      border-left: 3px solid rgba(100,200,100,0.45);
+      border-radius: 0 8px 8px 0;
+      font-size: 12px;
+      overflow: hidden;
+    }
+    .ctx-header { padding: 5px 10px; color: rgba(255,255,255,0.45); cursor: pointer; user-select: none; font-size: 11px; }
+    .ctx-header:hover { color: rgba(255,255,255,0.7); }
+    .ctx-body { padding: 0 10px 8px; color: rgba(255,255,255,0.5); font-style: italic; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+    .ctx-collapsed .ctx-body { display: none; }
+
+    #convo-list {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #convo-list.active { display: flex; }
+    #convo-list.active ~ #chat { display: none; }
+    #convo-list.active ~ #input-area { display: none; }
+    .convo-new {
+      padding: 8px 12px;
+      background: rgba(9,36,165,0.3);
+      border: 1px dashed rgba(9,36,165,0.5);
+      border-radius: 8px;
+      color: #89b4fa;
+      font-size: 12px;
+      cursor: pointer;
+      text-align: center;
+      margin-bottom: 4px;
+    }
+    .convo-new:hover { background: rgba(9,36,165,0.45); }
+    .convo-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px; background: rgba(255,255,255,0.04);
+      border-radius: 8px; cursor: pointer; font-size: 12px;
+    }
+    .convo-item:hover { background: rgba(255,255,255,0.08); }
+    .convo-item .convo-title { flex: 1; color: #e8eaf6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .convo-item .convo-meta { color: #a6adc8; font-size: 10px; white-space: nowrap; }
+    .convo-item .convo-delete {
+      background: none; border: none; color: rgba(255,255,255,0.3); cursor: pointer; font-size: 12px; padding: 0 2px;
+    }
+    .convo-item .convo-delete:hover { color: #f38ba8; }
+
+    #input-area {
+      background: rgba(9,36,165,0.12);
+      padding: 10px;
+      border-top: 1px solid rgba(9,36,165,0.3);
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      flex-shrink: 0;
+      position: relative;
+    }
+    #selection-indicator {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: rgba(9,36,165,0.15);
+      border-radius: 6px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.6);
+    }
+    #selection-indicator.active { display: flex; }
+    #selection-indicator .sel-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #selection-indicator .sel-clear { background: none; border: none; color: rgba(255,255,255,0.4); cursor: pointer; font-size: 12px; padding: 0 2px; }
+    #selection-indicator .sel-clear:hover { color: #fff; }
+
+    #writing-actions { display: none; gap: 4px; flex-wrap: wrap; }
+    #writing-actions.active { display: flex; }
+    #writing-actions button {
+      background: rgba(9,36,165,0.2); border: 1px solid rgba(9,36,165,0.35);
+      border-radius: 6px; color: #cdd6f4; font-size: 10px; padding: 3px 8px;
+      cursor: pointer; white-space: nowrap;
+    }
+    #writing-actions button:hover { background: rgba(9,36,165,0.4); color: #fff; }
+
+    #ss-row { display: flex; align-items: center; gap: 6px; }
+    #ss-status { flex: 1; font-size: 11px; color: rgba(255,255,255,0.45); font-style: italic; }
+    #ss-status.attached { color: #a6e3a1; font-style: normal; }
+    .tool-btn {
+      background: rgba(9,36,165,0.2); border: 1px solid rgba(9,36,165,0.4);
+      border-radius: 7px; color: #e8eaf6; font-size: 12px; padding: 5px 10px;
+      cursor: pointer; white-space: nowrap;
+    }
+    .tool-btn:hover { border-color: rgb(9,36,165); color: #fff; background: rgba(9,36,165,0.35); }
+    .tool-btn.active { background: rgba(9,36,165,0.5); border-color: rgb(9,36,165); color: #fff; }
+
+    #slash-menu {
+      display: none; position: absolute; bottom: 100%; left: 10px; right: 10px;
+      background: rgba(5,15,60,0.98); border: 1px solid rgba(9,36,165,0.5);
+      border-radius: 8px; padding: 4px; margin-bottom: 4px;
+      max-height: 200px; overflow-y: auto; z-index: 10;
+    }
+    #slash-menu.active { display: block; }
+    .slash-item { padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; color: #cdd6f4; }
+    .slash-item:hover { background: rgba(9,36,165,0.3); }
+    .slash-item .slash-cmd { color: #89b4fa; font-weight: 600; }
+    .slash-item .slash-desc { color: #a6adc8; margin-left: 8px; }
+
+    #send-row { display: flex; gap: 6px; }
+    #text-input {
+      flex: 1;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(9,36,165,0.4);
+      border-radius: 8px;
+      color: #e8eaf6;
+      font-size: 13px;
+      padding: 7px 10px;
+      outline: none;
+      font-family: inherit;
+      resize: none;
+      min-height: 36px;
+      max-height: 200px;
+      line-height: 1.4;
+    }
+    #text-input:focus { border-color: rgb(9,36,165); box-shadow: 0 0 0 2px rgba(9,36,165,0.25); }
+    #text-input::placeholder { color: rgba(255,255,255,0.3); }
+    #btn-send {
+      background: rgb(9, 36, 165); border: none; border-radius: 8px;
+      color: #fff; font-weight: 700; font-size: 13px; padding: 7px 14px;
+      cursor: pointer; align-self: flex-end; white-space: nowrap;
+      transition: background 0.15s;
+    }
+    #btn-send:hover { background: rgb(30, 70, 220); }
+    #btn-send:disabled { background: rgba(9,36,165,0.3); color: rgba(255,255,255,0.4); cursor: default; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <span id="header-icon">&#x25C9;</span>
+    <span id="header-title">AI Bubble</span>
+    <select id="model-select"></select>
+    <button id="btn-convos" class="hdr-btn" title="Conversations">&#x2630;</button>
+    <button id="btn-clear" class="hdr-btn">clear</button>
+  </div>
+  <div id="convo-list"></div>
+  <div id="chat"></div>
+  <div id="input-area">
+    <div id="selection-indicator">
+      <span class="sel-text"></span>
+      <button class="sel-clear">&#x2715;</button>
+    </div>
+    <div id="writing-actions"></div>
+    <div id="ss-row">
+      <span id="ss-status">No screenshot attached</span>
+      <button id="btn-page" class="tool-btn">&#x1F4C4; Page</button>
+      <button id="btn-screenshot" class="tool-btn">&#x1F4F7; Screenshot</button>
+    </div>
+    <div id="slash-menu"></div>
+    <div id="send-row">
+      <textarea id="text-input" rows="1" placeholder="Ask anything&#x2026; type / for commands"></textarea>
+      <button id="btn-send">Send</button>
+    </div>
+  </div>
+  <script src="shared.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

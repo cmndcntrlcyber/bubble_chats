@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "AI Bubble",
-  "version": "1.0.0",
-  "description": "Floating Claude AI assistant with screenshot troubleshooting",
+  "version": "2.0.0",
+  "description": "AI browser assistant — chat, page reading, writing help, side panel",
 
-  "permissions": ["activeTab", "tabs", "storage", "scripting"],
+  "permissions": ["activeTab", "tabs", "storage", "scripting", "contextMenus", "sidePanel"],
   "host_permissions": ["<all_urls>", "https://api.anthropic.com/*", "https://api.tavily.com/*"],
 
   "background": {
@@ -14,7 +14,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["shared.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
@@ -24,13 +24,28 @@
     "open_in_tab": false
   },
 
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Ctrl+Shift+B", "mac": "Command+Shift+B" },
+      "description": "Toggle AI Bubble"
+    },
+    "quick-summarize": {
+      "suggested_key": { "default": "Ctrl+Shift+S", "mac": "Command+Shift+S" },
+      "description": "Summarize current page"
+    }
+  },
+
   "action": {
     "default_icon": {
       "16":  "icons/icon16.png",
       "48":  "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "AI Bubble settings"
+    "default_title": "AI Bubble"
   },
 
   "icons": {

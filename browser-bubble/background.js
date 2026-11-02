@@ -1,5 +1,6 @@
 // background.js — service worker
-// Handles: API streaming, screenshots, API key storage
+// Handles: API streaming, screenshots, context menus, keyboard shortcuts,
+// page extraction relay, side panel support
 
 const ANTHROPIC_API = 'https://api.anthropic.com/v1/messages';
 const TAVILY_API    = 'https://api.tavily.com/search';
@@ -8,16 +9,30 @@ const SYSTEM_PROMPT =
   'Be concise and practical. When analyzing screenshots, identify issues ' +
   'clearly and suggest specific fixes. Use plain text — no markdown headers.';
 
-// Keep track of open ports
-const ports = new Map();
+// ── Port tracking ───────────────────────────────────────────────────────────
+
+const contentPorts = new Map();     // tabId -> port (from content scripts)
+const sidePanelPorts = new Map();   // tabId|'global' -> port (from side panel)
+
+function isSidePanelPort(port) {
+  return port.sender?.url?.startsWith(`chrome-extension://${chrome.runtime.id}/sidepanel`);
+}
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'ai-bubble') return;
-  const tabId = port.sender?.tab?.id;
-  if (tabId) ports.set(tabId, port);
+
+  const fromSidePanel = isSidePanelPort(port);
+  const tabId = fromSidePanel ? 'sidepanel' : port.sender?.tab?.id;
+
+  if (fromSidePanel) {
+    sidePanelPorts.set('sidepanel', port);
+  } else if (tabId) {
+    contentPorts.set(tabId, port);
+  }
 
   port.onDisconnect.addListener(() => {
-    if (tabId) ports.delete(tabId);
+    if (fromSidePanel) sidePanelPorts.delete('sidepanel');
+    else if (tabId) contentPorts.delete(tabId);
   });
 
   port.onMessage.addListener(async (msg) => {
@@ -26,7 +41,7 @@ chrome.runtime.onConnect.addListener((port) => {
         await handleSend(port, msg);
         break;
       case 'SCREENSHOT':
-        await handleScreenshot(port, tabId);
+        await handleScreenshot(port, fromSidePanel ? msg.tabId : tabId);
         break;
       case 'GET_KEY':
         await handleGetKey(port);
@@ -34,14 +49,168 @@ chrome.runtime.onConnect.addListener((port) => {
       case 'FETCH_OLLAMA_MODELS':
         await handleFetchOllamaModels(port);
         break;
+      case 'SELECTION_CHANGED':
+        // Relay selection from content script to side panel
+        const spPort = sidePanelPorts.get('sidepanel');
+        if (spPort) spPort.postMessage({ type: 'SELECTION_UPDATE', text: msg.text });
+        break;
+      case 'EXTRACT_ACTIVE_TAB':
+        await handleExtractActiveTab(port);
+        break;
     }
   });
 });
 
-// Open options page when toolbar icon is clicked
-chrome.action.onClicked.addListener(() => {
-  chrome.runtime.openOptionsPage();
+// ── Context menus ───────────────────────────────────────────────────────────
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({ id: 'ask-bubble', title: 'Ask AI Bubble about "%s"', contexts: ['selection'] });
+  chrome.contextMenus.create({ id: 'summarize-page', title: 'Summarize this page', contexts: ['page'] });
+  chrome.contextMenus.create({ id: 'explain', title: 'Explain this', contexts: ['selection'] });
+  chrome.contextMenus.create({ id: 'translate', title: 'Translate this', contexts: ['selection'] });
+  chrome.contextMenus.create({ id: 'rewrite', title: 'Rewrite this', contexts: ['selection'] });
 });
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!tab?.id) return;
+
+  if (info.menuItemId === 'summarize-page') {
+    try {
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          if (typeof AIBubbleShared !== 'undefined') return AIBubbleShared.extractPageContent();
+          const clone = document.body.cloneNode(true);
+          ['script','style','noscript','svg','canvas','nav','header','footer','iframe','aside']
+            .forEach(t => clone.querySelectorAll(t).forEach(e => e.remove()));
+          return { url: location.href, title: document.title, text: clone.innerText.replace(/\s+/g,' ').trim().slice(0,12000), selection: '' };
+        },
+      });
+      const ctx = result?.result;
+      const prompt = ctx
+        ? `Summarize this page:\n\nURL: ${ctx.url}\nTitle: ${ctx.title}\n\n${ctx.text.slice(0, 8000)}`
+        : 'Summarize the current page.';
+      sendAction(tab.id, { type: 'CONTEXT_MENU_ACTION', action: 'summarize', text: prompt });
+    } catch {
+      sendAction(tab.id, { type: 'CONTEXT_MENU_ACTION', action: 'summarize', text: 'Summarize the current page.' });
+    }
+    return;
+  }
+
+  const actionMap = {
+    'ask-bubble': { action: 'ask', prefix: '' },
+    'explain':    { action: 'explain', prefix: 'Explain the following clearly and concisely:\n\n' },
+    'translate':  { action: 'translate', prefix: 'Translate the following to English:\n\n' },
+    'rewrite':    { action: 'rewrite', prefix: 'Rewrite the following text, improving clarity while keeping the same meaning:\n\n' },
+  };
+
+  const entry = actionMap[info.menuItemId];
+  if (entry && info.selectionText) {
+    const prompt = entry.prefix + info.selectionText;
+    sendAction(tab.id, { type: 'CONTEXT_MENU_ACTION', action: entry.action, text: prompt });
+  }
+});
+
+function sendToContentScript(tabId, msg) {
+  chrome.tabs.sendMessage(tabId, msg).catch(() => {
+    chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['shared.js', 'content.js'],
+    }).then(() => {
+      setTimeout(() => chrome.tabs.sendMessage(tabId, msg).catch(() => {}), 300);
+    }).catch(() => {});
+  });
+}
+
+// Route actions to either content script (bubble mode) or side panel (sidepanel mode)
+async function sendAction(tabId, msg) {
+  const { displayMode } = await chrome.storage.local.get('displayMode');
+  if (displayMode === 'sidepanel') {
+    const spPort = sidePanelPorts.get('sidepanel');
+    if (spPort) {
+      spPort.postMessage(msg);
+      // Ensure side panel is open
+      if (typeof chrome?.sidePanel?.open === 'function') {
+        chrome.sidePanel.open({ tabId }).catch(() => {});
+      }
+    } else {
+      // Side panel not open yet — open it, then retry
+      if (typeof chrome?.sidePanel?.open === 'function') {
+        chrome.sidePanel.open({ tabId }).catch(() => {});
+        setTimeout(() => {
+          const p = sidePanelPorts.get('sidepanel');
+          if (p) p.postMessage(msg);
+        }, 500);
+      }
+    }
+  } else {
+    sendToContentScript(tabId, msg);
+  }
+}
+
+// ── Keyboard shortcuts + toolbar icon ───────────────────────────────────────
+
+chrome.action.onClicked.addListener(async (tab) => {
+  const { displayMode } = await chrome.storage.local.get('displayMode');
+  if (displayMode === 'sidepanel' && typeof chrome?.sidePanel?.open === 'function') {
+    chrome.sidePanel.open({ tabId: tab.id });
+  } else {
+    sendToContentScript(tab.id, { type: 'TOGGLE_PANEL' });
+  }
+});
+
+chrome.commands.onCommand.addListener(async (command) => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+
+  if (command === 'quick-summarize') {
+    // Trigger summarize via context menu action handler reuse
+    try {
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          if (typeof AIBubbleShared !== 'undefined') return AIBubbleShared.extractPageContent();
+          const clone = document.body.cloneNode(true);
+          ['script','style','noscript','svg','canvas','nav','header','footer','iframe','aside']
+            .forEach(t => clone.querySelectorAll(t).forEach(e => e.remove()));
+          return { url: location.href, title: document.title, text: clone.innerText.replace(/\s+/g,' ').trim().slice(0,12000), selection: '' };
+        },
+      });
+      const ctx = result?.result;
+      const prompt = ctx
+        ? `Summarize this page:\n\nURL: ${ctx.url}\nTitle: ${ctx.title}\n\n${ctx.text.slice(0, 8000)}`
+        : 'Summarize the current page.';
+      sendAction(tab.id, { type: 'CONTEXT_MENU_ACTION', action: 'summarize', text: prompt });
+    } catch {
+      sendAction(tab.id, { type: 'CONTEXT_MENU_ACTION', action: 'summarize', text: 'Summarize the current page.' });
+    }
+  }
+});
+
+// ── Page extraction for side panel ──────────────────────────────────────────
+
+async function handleExtractActiveTab(port) {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) { port.postMessage({ type: 'PAGE_CONTENT', error: 'No active tab' }); return; }
+
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        if (typeof AIBubbleShared !== 'undefined') return AIBubbleShared.extractPageContent();
+        const clone = document.body.cloneNode(true);
+        ['script','style','noscript','svg','canvas','nav','header','footer','iframe','aside']
+          .forEach(t => clone.querySelectorAll(t).forEach(e => e.remove()));
+        return { url: location.href, title: document.title, text: clone.innerText.replace(/\s+/g,' ').trim().slice(0,12000), selection: window.getSelection().toString().trim() };
+      },
+    });
+    port.postMessage({ type: 'PAGE_CONTENT', ...(result?.result || {}) });
+  } catch (err) {
+    port.postMessage({ type: 'PAGE_CONTENT', error: err.message });
+  }
+}
+
+// ── Existing handlers (unchanged logic) ─────────────────────────────────────
 
 async function handleGetKey(port) {
   const { apiKey } = await chrome.storage.local.get('apiKey');
@@ -85,7 +254,6 @@ async function handleScreenshot(port, tabId) {
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
       format: 'png',
     });
-    // Strip the data:image/png;base64, prefix
     const base64 = dataUrl.split(',')[1];
     port.postMessage({ type: 'SCREENSHOT_DATA', data: base64 });
   } catch (err) {
@@ -93,8 +261,6 @@ async function handleScreenshot(port, tabId) {
   }
 }
 
-// Convert Anthropic-format messages to Ollama's simpler format,
-// prepending the system prompt as a system role message.
 function toOllamaMessages(messages, systemPrompt) {
   const result = [{ role: 'system', content: systemPrompt }];
   for (const m of messages) {
@@ -111,8 +277,6 @@ function toOllamaMessages(messages, systemPrompt) {
   return result;
 }
 
-// Shared SSE reader that parses Anthropic-compatible SSE chunks and posts them to the port.
-// Used by both handleSendHF and can be reused for any Anthropic-SSE source.
 async function readAnthropicSseStream(response, port, chunkType = 'CHUNK') {
   const reader  = response.body.getReader();
   const decoder = new TextDecoder();
@@ -176,7 +340,7 @@ async function handleSendContext(port, messages, workerUrl, workerSecret) {
       headers: { 'Content-Type': 'application/json', 'X-Bubble-Auth': workerSecret },
       body: JSON.stringify({ messages: hfMessages, mode: 'context', stream: true }),
     });
-    if (!response.ok) return; // silent — context is non-critical
+    if (!response.ok) return;
     await readAnthropicSseStream(response, port, 'CONTEXT_CHUNK');
     port.postMessage({ type: 'CONTEXT_DONE' });
   } catch { /* silent */ }
@@ -223,7 +387,7 @@ async function handleSendOllama(port, messages, model, host, systemPrompt) {
   }
 }
 
-async function handleSend(port, { messages, model }) {
+async function handleSend(port, { messages, model, pageContext }) {
   const {
     apiKey, tavilyKey, provider, ollamaHost,
     hfWorkerUrl, hfWorkerSecret, hfChatModel, hfContextEnabled,
@@ -244,8 +408,18 @@ async function handleSend(port, { messages, model }) {
     return;
   }
 
-  // Build system prompt, optionally enriched with Tavily web search context
+  // Build system prompt
   let systemPrompt = SYSTEM_PROMPT;
+
+  // Page context enrichment
+  if (pageContext && pageContext.text) {
+    systemPrompt += `\n\nPage context:\nURL: ${pageContext.url || ''}\nTitle: ${pageContext.title || ''}\nContent: ${pageContext.text.slice(0, 8000)}`;
+    if (pageContext.selection) {
+      systemPrompt += `\n\nSelected text: ${pageContext.selection}`;
+    }
+  }
+
+  // Tavily web search enrichment
   if (tavilyKey) {
     const lastUser = [...messages].reverse().find(m => m.role === 'user');
     const queryText = Array.isArray(lastUser?.content)

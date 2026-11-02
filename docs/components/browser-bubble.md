@@ -2,159 +2,161 @@
 
 **Component:** `browser-bubble/`
 **Type:** Chrome/Firefox Extension (Manifest V3)
-**Total Lines:** ~1,452 across 4 source files
+**Version:** 2.0.0
+**Total Lines:** ~3,174 across 7 source files
 **Browsers:** Chrome 88+, Firefox 109+
 
-A Manifest V3 browser extension that injects a draggable floating chat bubble into every webpage. Supports three LLM providers with streaming responses, screenshot capture for visual context, and an optional contextualizing agent.
+A Manifest V3 browser extension that provides an AI assistant via a floating chat bubble or Chrome side panel. Supports three LLM providers with streaming responses, page content reading, text selection actions, context menus, slash commands, writing assistance, conversation persistence, screenshot capture, and an optional contextualizing agent.
 
 ## File Map
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `manifest.json` | — | Extension manifest: permissions, content scripts, service worker registration |
-| `background.js` | ~340 | Service worker: API streaming (Anthropic, Ollama, HF), screenshot capture, Tavily search, model list fetching |
-| `content.js` | ~676 | Injected UI: Shadow DOM chat bubble, panel, message rendering, resize/drag |
-| `options.html` | ~197 | Settings page markup: provider tabs, API key inputs, agent toggle |
-| `options.js` | ~239 | Settings page logic: save/load config from `chrome.storage.local` |
+| `manifest.json` | ~63 | Extension manifest: permissions, content scripts, service worker, side panel, commands |
+| `shared.js` | ~604 | Shared module: CSS, chat helpers, page extraction, slash commands, conversation CRUD |
+| `background.js` | ~489 | Service worker: API streaming, screenshots, context menus, keyboard shortcuts, page extraction relay, side panel port routing |
+| `content.js` | ~716 | Injected UI: Shadow DOM bubble/panel, selection awareness, writing actions, slash autocomplete, conversation list |
+| `sidepanel.html` | ~280 | Side panel page markup |
+| `sidepanel.js` | ~498 | Side panel logic: chat, page extraction via scripting API, selection relay |
+| `options.html` | ~249 | Settings page: display mode, provider tabs, page context, shortcuts, conversation management |
+| `options.js` | ~338 | Settings page logic |
 | `icons/` | — | Extension icons: `icon16.png`, `icon48.png`, `icon128.png` |
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│  content.js (every page, Shadow DOM)        │
-│  ┌───────────┐  ┌────────────────────────┐  │
-│  │ 56px      │  │ Chat Panel (400x540)   │  │
-│  │ Bubble    │──│ Messages + Input        │  │
-│  │ (drag)    │  │ Model Selector          │  │
-│  └───────────┘  └─────────┬──────────────┘  │
-│                           │ chrome.runtime   │
-│                           │ .connect()       │
-└───────────────────────────┼─────────────────┘
-                            │ Port messaging
-┌───────────────────────────┼─────────────────┐
-│  background.js (service worker)             │
-│                           │                 │
-│  ┌────────────┐ ┌────────┴───────┐         │
-│  │ Screenshot │ │ API Router     │         │
-│  │ Capture    │ │                │         │
-│  └────────────┘ │ Anthropic SSE  │         │
-│                 │ Ollama NDJSON  │         │
-│                 │ HF Worker SSE  │         │
-│                 └────────────────┘         │
-│  ┌────────────┐ ┌────────────────┐         │
-│  │ Tavily     │ │ Model List     │         │
-│  │ Search     │ │ Fetch          │         │
-│  └────────────┘ └────────────────┘         │
-└─────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  content.js (every page, Shadow DOM)                │
+│  ┌───────────┐  ┌──────────────────────────────┐    │
+│  │ 56px      │  │ Chat Panel (400x540)         │    │
+│  │ Bubble    │──│ Messages + Selection + Input  │    │
+│  │ (drag)    │  │ Slash Commands + Writing Help │    │
+│  └───────────┘  │ Conversation List             │    │
+│                 └──────────┬───────────────────┘    │
+│                            │ chrome.runtime          │
+│   Selection relay ─────────┤ .connect()              │
+│   onMessage listener ──────┤                         │
+└────────────────────────────┼────────────────────────┘
+                             │ Port messaging
+┌────────────────────────────┼────────────────────────┐
+│  background.js (service worker)                     │
+│                            │                        │
+│  ┌──────────────┐ ┌───────┴─────────┐              │
+│  │ Context Menu │ │ API Router      │              │
+│  │ + Shortcuts  │ │                 │              │
+│  └──────┬───────┘ │ Anthropic SSE   │              │
+│         │         │ Ollama NDJSON   │              │
+│         │         │ HF Worker SSE   │              │
+│  sendAction()     └─────────────────┘              │
+│  (mode-aware      ┌─────────────────┐              │
+│   routing)        │ Page Extraction  │              │
+│         │         │ + Selection Relay│              │
+│         ▼         └─────────────────┘              │
+│  ┌──────────────┐                                  │
+│  │ Side Panel   │◄── sidepanel.js connects here    │
+│  │ Port Routing │                                  │
+│  └──────────────┘                                  │
+└────────────────────────────────────────────────────┘
+
+┌────────────────────────────────────────────────────┐
+│  sidepanel.html + sidepanel.js (Chrome side panel) │
+│  Full chat UI, page extraction via scripting API,  │
+│  selection updates relayed from content.js          │
+└────────────────────────────────────────────────────┘
 ```
 
-The extension uses a two-process model:
+## Display Modes
 
-- **Service worker** (`background.js`) handles all network I/O — API calls, streaming, screenshot capture, and search. It runs in the extension's background context with full API access.
-- **Content script** (`content.js`) manages the visible UI inside a Shadow DOM root on every page. It communicates with the service worker via `chrome.runtime.onConnect` port messaging.
+| Mode | Description | Activation |
+|------|-------------|------------|
+| **Floating Bubble** (default) | 56px draggable circle on every page, opens a resizable chat panel | Set in Options or via Ctrl+Shift+B |
+| **Side Panel** | Chrome native side panel, full-height, no bubble injection | Set in Options; toolbar icon opens side panel |
 
-This separation keeps API keys out of page context and avoids CORS restrictions that would block direct API calls from content scripts.
+In side panel mode, `content.js` still runs on every page but only relays text selection events — it does not inject any visible UI.
+
+## New Features (v2.0)
+
+### Page Content Reading
+Toggle the "Page" button to include the current page's text content with messages. The extractor clones the DOM, strips non-content elements (script, style, nav, etc.), and truncates to 12,000 chars. Appended to the system prompt as page context.
+
+### Text Selection Awareness
+When text is selected on any page, a selection indicator appears in the input area. The selection is automatically prepended to the next message. In side panel mode, selection events are relayed from the content script via the background service worker.
+
+### Writing Assistance
+When text is selected, quick-action buttons appear: **Rewrite**, **Shorter**, **Longer**, **Fix Grammar**, **Change Tone**. Each sends a pre-built prompt with the selection. AI responses include a "Copy" button.
+
+### Context Menu
+Right-click selected text for: "Ask AI Bubble about this", "Explain this", "Translate this", "Rewrite this". Right-click on a page (no selection) for "Summarize this page". Actions are mode-aware — they route to the bubble panel or side panel based on the current display mode.
+
+### Slash Commands
+Type `/` in the input for autocomplete: `/summarize`, `/explain`, `/translate`, `/rewrite`, `/code`. Commands use page content and/or text selection as context.
+
+### Keyboard Shortcuts
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Shift+B` | Toggle bubble panel / open side panel |
+| `Ctrl+Shift+S` | Quick-summarize current page |
+
+Customizable at `chrome://extensions/shortcuts`.
+
+### Conversation Persistence
+Conversations auto-save to `chrome.storage.local` after each AI response. Features:
+- Conversation list with title, message count, and relative timestamps
+- Switch between conversations, create new, delete old
+- Auto-prune at 100 conversations (oldest deleted first)
+- Export all conversations as JSON from Options page
+
+### PDF Content Extraction
+When the current tab displays a PDF, the page extractor attempts to read text from Chrome's built-in PDF viewer shadow DOM or Firefox's PDF.js viewer DOM. Falls back gracefully if extraction is unavailable.
 
 ## LLM Providers
 
-All providers stream responses back to the content script via port messaging. The active provider is set in the Options page and persisted in `chrome.storage.local`.
+All providers stream responses back via port messaging. The active provider is set in Options.
 
 | Provider | Protocol | Endpoint | Streaming Format |
 |----------|----------|----------|-----------------|
 | Anthropic (Claude) | HTTPS | `api.anthropic.com/v1/messages` | SSE with `content_block_delta` events |
-| Ollama | HTTP | `{OLLAMA_HOST}/api/chat` | NDJSON lines, converted to text chunks |
-| HuggingFace (CF Worker) | HTTPS | `{HF_WORKER_URL}` | Anthropic-compatible SSE (normalized by Worker) |
-
-**Provider priority:** The UI uses whichever provider is selected in settings. The service worker reads provider config from `chrome.storage.local` on each request.
+| Ollama | HTTP | `{OLLAMA_HOST}/api/chat` | NDJSON lines |
+| HuggingFace (CF Worker) | HTTPS | `{HF_WORKER_URL}` | Anthropic-compatible SSE |
 
 **Available models:**
-- Anthropic: Haiku 4.5 (default), Sonnet 4.6, Opus 4.6
-- Ollama: dynamically fetched from `/api/tags` endpoint
+- Anthropic: Haiku 4.5, Sonnet 4.6, Opus 4.6
+- Ollama: dynamically fetched from `/api/tags`
 - HuggingFace: configurable model ID (default `meta-llama/Llama-3.1-8B-Instruct`)
 
-**Shared SSE parser:** `readAnthropicSseStream()` in `background.js` is used by both the Anthropic and HF code paths, since the CF Worker normalizes HF output to Anthropic format.
+## Storage Keys
 
-## UI Components
-
-The content script builds the entire UI inside a Shadow DOM root to prevent host-page style conflicts.
-
-| Component | Specification |
-|-----------|--------------|
-| Bubble | 56px circle, fixed position, draggable, click toggles panel |
-| Chat Panel | 400x540px default, resizable via corner handles |
-| Message List | Scrollable, auto-scroll on new content, markdown rendering |
-| Input Area | Auto-growing textarea, Enter to send, Shift+Enter for newline |
-| Model Selector | Dropdown populated based on active provider |
-| Settings Gear | Opens extension Options page |
-| Screenshot Button | Captures visible tab, attaches to next message |
-
-## Screenshot Capture
-
-1. User clicks the screenshot button in the chat panel.
-2. Content script sends a `captureScreenshot` message to the service worker.
-3. Service worker calls `chrome.tabs.captureVisibleTab()` to get a base64 PNG of the active tab.
-4. The PNG is included as an `image` content block in Anthropic message format:
-   ```json
-   {
-     "type": "image",
-     "source": {
-       "type": "base64",
-       "media_type": "image/png",
-       "data": "<base64>"
-     }
-   }
-   ```
-5. The image block is prepended to the user's next message when sent to the LLM.
-
-## Tavily Integration
-
-When a Tavily API key is configured:
-
-1. The last user message text is sent as a search query to `https://api.tavily.com/search`.
-2. The top 3 results (title + URL + content snippet) are formatted as a context block.
-3. This context is prepended to the system prompt before calling the LLM.
-4. The search runs on every user message — there is no caching or deduplication.
-
-## Contextualizing Agent
-
-When enabled in settings, a parallel inference call runs alongside the primary LLM response:
-
-1. The user's message is sent to the CF Worker with `mode: 'context'`.
-2. The Worker routes this to a separate model (`HF_CONTEXT_MODEL`, default `Qwen/Qwen2.5-7B-Instruct`) with a system prompt instructing it to provide factual clarifications, alternative viewpoints, and caveats.
-3. The response streams into a collapsible annotation block beneath the primary AI reply.
-
-The context agent requires a deployed CF Worker and HF provider configuration.
-
-## Options Page
-
-Three provider tabs with provider-specific configuration fields:
-
-| Tab | Fields |
-|-----|--------|
-| **Anthropic** | API Key, Model selector (Haiku/Sonnet/Opus) |
-| **Ollama** | Host URL, Model selector (auto-populated from `/api/tags`) |
-| **HF (CF Worker)** | Worker URL, Shared Secret, Model ID, Context Agent toggle |
-
-Additional settings:
-- Tavily API Key (applies to all providers)
-- Contextualizing Agent enable/disable
-
-The page uses a Catppuccin-inspired dark theme with `#fab387` orange accents.
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `apiKey` | string | — | Anthropic API key |
+| `tavilyKey` | string | — | Tavily search API key |
+| `provider` | string | `'anthropic'` | Active LLM provider |
+| `ollamaHost` | string | — | Ollama server URL |
+| `ollamaModel` | string | — | Selected Ollama model |
+| `hfWorkerUrl` | string | — | CF Worker proxy URL |
+| `hfWorkerSecret` | string | — | CF Worker auth secret |
+| `hfChatModel` | string | — | HF model ID |
+| `hfContextEnabled` | boolean | `false` | Contextualizing agent toggle |
+| `displayMode` | string | `'bubble'` | `'bubble'` or `'sidepanel'` |
+| `pageContextDefault` | boolean | `false` | Auto-include page content |
+| `conversations` | object | `{}` | Saved conversation data |
+| `activeConversationId` | string | `null` | Currently active conversation |
 
 ## Manifest Permissions
 
 | Permission | Reason |
 |------------|--------|
-| `activeTab` | Screenshot capture of the current tab |
-| `tabs` | Access tab URL for context |
-| `storage` | Persist API keys and settings in `chrome.storage.local` |
-| `scripting` | Inject content script into pages |
-| `host_permissions: <all_urls>` | Inject bubble UI on every page |
-| `host_permissions: api.anthropic.com` | Direct Anthropic API calls from service worker |
-| `host_permissions: api.tavily.com` | Tavily search API calls from service worker |
+| `activeTab` | Screenshot capture, page extraction |
+| `tabs` | Tab URL/title access, tab activation events |
+| `storage` | Persist settings and conversations |
+| `scripting` | Inject scripts, extract page content |
+| `contextMenus` | Right-click actions |
+| `sidePanel` | Chrome side panel mode |
+| `host_permissions: <all_urls>` | Inject UI on every page |
+| `host_permissions: api.anthropic.com` | Anthropic API calls |
+| `host_permissions: api.tavily.com` | Tavily search calls |
 
-**Firefox-specific:** Gecko ID `ai-bubble@cmndcntrl`, minimum version 109.0.
+**Firefox:** Gecko ID `ai-bubble@cmndcntrl`, minimum 109.0. Side panel features gracefully degrade (hidden in options, `sidePanel` permission ignored).
 
 ## Cross-References
 

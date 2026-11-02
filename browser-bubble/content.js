@@ -1,8 +1,10 @@
 // content.js — injected into every page
 // Floating AI bubble using Shadow DOM for full style isolation
 
-(function () {
+(async function () {
   if (document.getElementById('__ai_bubble_host__')) return;
+
+  const S = window.AIBubbleShared;
 
   // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -12,286 +14,19 @@
     { label: 'Opus 4.6   — powerful', id: 'claude-opus-4-6' },
   ];
 
-  let activeModels = CLAUDE_MODELS; // updated async once storage is read
+  let activeModels = CLAUDE_MODELS;
 
-  const CSS = `
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  // ── Check display mode ────────────────────────────────────────────────────
 
-    :host { all: initial; }
+  const { displayMode } = await chrome.storage.local.get('displayMode');
+  const isSidePanelMode = displayMode === 'sidepanel';
 
-    #bubble {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      width: 56px;
-      height: 56px;
-      border-radius: 50%;
-      background: rgb(9, 36, 165);
-      border: 2px solid rgba(255,255,255,0.25);
-      cursor: grab;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 22px;
-      box-shadow: 0 4px 20px rgba(9,36,165,0.5);
-      transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
-      z-index: 2147483647;
-      user-select: none;
-    }
-    #bubble:hover { background: rgb(30, 70, 220); transform: scale(1.05); box-shadow: 0 6px 28px rgba(9,36,165,0.7); }
-    #bubble:active { cursor: grabbing; }
-
-    #panel {
-      position: fixed;
-      bottom: 90px;
-      right: 24px;
-      width: 400px;
-      height: 540px;
-      min-width: 280px;
-      min-height: 350px;
-      background: rgba(5, 15, 60, 0.95);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border-radius: 16px;
-      border: 1px solid rgba(9,36,165,0.45);
-      box-shadow: 0 8px 40px rgba(0,0,0,0.65);
-      display: flex;
-      flex-direction: column;
-      z-index: 2147483646;
-      overflow: hidden;
-      font-family: "Inter", "Segoe UI", "Ubuntu", sans-serif;
-      font-size: 13px;
-      color: #e8eaf6;
-    }
-    #panel.hidden { display: none; }
-
-    /* Header */
-    #header {
-      background: rgb(9, 36, 165);
-      padding: 10px 12px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-shrink: 0;
-    }
-    #header-icon { font-size: 18px; color: #fff; flex-shrink: 0; }
-    #header-title { font-weight: 600; font-size: 13px; color: #fff; flex: 1; }
-    #model-select {
-      background: rgba(255,255,255,0.15);
-      border: 1px solid rgba(255,255,255,0.25);
-      border-radius: 6px;
-      color: #fff;
-      font-size: 11px;
-      padding: 3px 6px;
-      cursor: pointer;
-      outline: none;
-      max-width: 140px;
-    }
-    #model-select option { background: #050f3c; color: #e8eaf6; }
-    #btn-clear {
-      background: transparent;
-      border: none;
-      color: rgba(255,255,255,0.75);
-      font-size: 11px;
-      padding: 3px 8px;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    #btn-clear:hover { color: #fff; background: rgba(255,255,255,0.15); }
-    #btn-close {
-      background: transparent;
-      border: none;
-      color: rgba(255,255,255,0.75);
-      font-size: 15px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      cursor: pointer;
-      line-height: 1;
-    }
-    #btn-close:hover { color: #fff; background: rgba(255,255,255,0.15); }
-
-    /* Chat area */
-    #chat {
-      flex: 1;
-      overflow-y: auto;
-      padding: 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      scroll-behavior: smooth;
-    }
-    #chat::-webkit-scrollbar { width: 4px; }
-    #chat::-webkit-scrollbar-track { background: transparent; }
-    #chat::-webkit-scrollbar-thumb { background: rgba(9,36,165,0.4); border-radius: 2px; }
-
-    .msg-user {
-      align-self: flex-end;
-      background: rgba(9,36,165,0.3);
-      border: 1px solid rgba(9,36,165,0.4);
-      border-radius: 12px 12px 4px 12px;
-      padding: 8px 12px;
-      max-width: 80%;
-      word-break: break-word;
-      white-space: pre-wrap;
-      color: #e8eaf6;
-    }
-    .msg-ai {
-      align-self: flex-start;
-      background: rgba(255,255,255,0.05);
-      border-left: 3px solid rgb(9, 36, 165);
-      border-radius: 0 12px 12px 0;
-      padding: 8px 12px;
-      max-width: 96%;
-      word-break: break-word;
-      white-space: pre-wrap;
-      line-height: 1.55;
-      color: #e8eaf6;
-    }
-    .msg-system {
-      align-self: center;
-      color: rgba(255,255,255,0.45);
-      font-size: 11px;
-      font-style: italic;
-      padding: 2px 0;
-    }
-    .msg-error {
-      align-self: flex-start;
-      color: #ff8a80;
-      font-size: 12px;
-      padding: 6px 10px;
-      background: rgba(255,100,80,0.1);
-      border-radius: 8px;
-      max-width: 85%;
-    }
-
-    /* Input area */
-    #input-area {
-      background: rgba(9,36,165,0.12);
-      padding: 10px;
-      border-top: 1px solid rgba(9,36,165,0.3);
-      display: flex;
-      flex-direction: column;
-      gap: 7px;
-      flex-shrink: 0;
-    }
-    #ss-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    #ss-status {
-      flex: 1;
-      font-size: 11px;
-      color: rgba(255,255,255,0.45);
-      font-style: italic;
-    }
-    #ss-status.attached { color: #a6e3a1; font-style: normal; }
-    #btn-screenshot {
-      background: rgba(9,36,165,0.2);
-      border: 1px solid rgba(9,36,165,0.4);
-      border-radius: 7px;
-      color: #e8eaf6;
-      font-size: 12px;
-      padding: 5px 10px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    #btn-screenshot:hover { border-color: rgb(9,36,165); color: #fff; background: rgba(9,36,165,0.35); }
-    #send-row {
-      display: flex;
-      gap: 6px;
-    }
-    #text-input {
-      flex: 1;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(9,36,165,0.4);
-      border-radius: 8px;
-      color: #e8eaf6;
-      font-size: 13px;
-      padding: 7px 10px;
-      outline: none;
-      font-family: inherit;
-      resize: none;
-      min-height: 36px;
-      max-height: 200px;
-      line-height: 1.4;
-    }
-    #text-input:focus { border-color: rgb(9,36,165); box-shadow: 0 0 0 2px rgba(9,36,165,0.25); }
-    #text-input::placeholder { color: rgba(255,255,255,0.3); }
-    #btn-send {
-      background: rgb(9, 36, 165);
-      border: none;
-      border-radius: 8px;
-      color: #fff;
-      font-weight: 700;
-      font-size: 13px;
-      padding: 7px 14px;
-      cursor: pointer;
-      align-self: flex-end;
-      white-space: nowrap;
-      transition: background 0.15s;
-    }
-    #btn-send:hover { background: rgb(30, 70, 220); }
-    #btn-send:disabled { background: rgba(9,36,165,0.3); color: rgba(255,255,255,0.4); cursor: default; }
-
-    /* Contextualizing agent */
-    .msg-context {
-      align-self: stretch;
-      background: rgba(100,200,100,0.04);
-      border-left: 3px solid rgba(100,200,100,0.45);
-      border-radius: 0 8px 8px 0;
-      margin: 0;
-      font-size: 12px;
-      overflow: hidden;
-    }
-    .ctx-header {
-      padding: 5px 10px; color: rgba(255,255,255,0.45);
-      cursor: pointer; user-select: none; font-size: 11px;
-    }
-    .ctx-header:hover { color: rgba(255,255,255,0.7); }
-    .ctx-body {
-      padding: 0 10px 8px; color: rgba(255,255,255,0.5);
-      font-style: italic; line-height: 1.5;
-      white-space: pre-wrap; word-break: break-word;
-    }
-    .ctx-collapsed .ctx-body { display: none; }
-
-    /* Resize corner handles */
-    .resize-corner {
-      position: absolute;
-      width: 20px;
-      height: 20px;
-      z-index: 5;
-    }
-    .rc-nw { top: 0; left: 0; cursor: nw-resize; }
-    .rc-ne { top: 0; right: 0; cursor: ne-resize; }
-    .rc-sw { bottom: 0; left: 0; cursor: sw-resize; }
-    .rc-se { bottom: 0; right: 0; cursor: se-resize; }
-    .rc-se::after {
-      content: ''; position: absolute; bottom: 4px; right: 4px;
-      width: 8px; height: 8px;
-      border-right: 2px solid rgba(9,36,165,0.7);
-      border-bottom: 2px solid rgba(9,36,165,0.7);
-    }
-    .rc-sw::after {
-      content: ''; position: absolute; bottom: 4px; left: 4px;
-      width: 8px; height: 8px;
-      border-left: 2px solid rgba(9,36,165,0.7);
-      border-bottom: 2px solid rgba(9,36,165,0.7);
-    }
-    .rc-ne::after {
-      content: ''; position: absolute; top: 4px; right: 4px;
-      width: 8px; height: 8px;
-      border-right: 2px solid rgba(9,36,165,0.7);
-      border-top: 2px solid rgba(9,36,165,0.7);
-    }
-    .rc-nw::after {
-      content: ''; position: absolute; top: 4px; left: 4px;
-      width: 8px; height: 8px;
-      border-left: 2px solid rgba(9,36,165,0.7);
-      border-top: 2px solid rgba(9,36,165,0.7);
-    }
-  `;
+  // In side panel mode, only set up selection relay — no bubble UI injected.
+  // Context menu actions and toggle are handled by sidepanel.js via background.js routing.
+  if (isSidePanelMode) {
+    setupSelectionRelay();
+    return;
+  }
 
   // ── DOM ────────────────────────────────────────────────────────────────────
 
@@ -303,7 +38,7 @@
   const shadow = host.attachShadow({ mode: 'open' });
 
   const styleEl = document.createElement('style');
-  styleEl.textContent = CSS;
+  styleEl.textContent = S.CSS;
   shadow.appendChild(styleEl);
 
   // Bubble button
@@ -325,25 +60,74 @@
       <span id="header-icon">◉</span>
       <span id="header-title">AI Bubble</span>
       <select id="model-select"></select>
+      <button id="btn-convos" title="Conversations">☰</button>
       <button id="btn-clear">clear</button>
       <button id="btn-close">✕</button>
     </div>
+    <div id="convo-list"></div>
     <div id="chat"></div>
-    <div id="input-area">
+    <div id="input-area" style="position:relative">
+      <div id="selection-indicator">
+        <span class="sel-text"></span>
+        <button class="sel-clear">✕</button>
+      </div>
+      <div id="writing-actions"></div>
       <div id="ss-row">
         <span id="ss-status">No screenshot attached</span>
-        <button id="btn-screenshot">📷 Screenshot</button>
+        <button id="btn-page" class="tool-btn">\u{1F4C4} Page</button>
+        <button id="btn-screenshot" class="tool-btn">\u{1F4F7} Screenshot</button>
       </div>
+      <div id="slash-menu"></div>
       <div id="send-row">
-        <textarea id="text-input" rows="1" placeholder="Ask anything about this page…"></textarea>
+        <textarea id="text-input" rows="1" placeholder="Ask anything… type / for commands"></textarea>
         <button id="btn-send">Send</button>
       </div>
     </div>
   `;
   shadow.appendChild(panel);
 
-  // Populate model selector — initially Claude, updated async after storage read
-  const modelSelect = panel.querySelector('#model-select');
+  // Build writing action buttons
+  const writingActionsEl = panel.querySelector('#writing-actions');
+  S.WRITING_ACTIONS.forEach(wa => {
+    const btn = document.createElement('button');
+    btn.textContent = wa.label;
+    btn.addEventListener('click', () => {
+      if (!currentSelection || isStreaming) return;
+      sendPrompt(wa.prompt(currentSelection));
+    });
+    writingActionsEl.appendChild(btn);
+  });
+
+  // Build slash command menu
+  const slashMenu = panel.querySelector('#slash-menu');
+  S.SLASH_COMMANDS.forEach(sc => {
+    const item = document.createElement('div');
+    item.className = 'slash-item';
+    item.innerHTML = `<span class="slash-cmd">${sc.cmd}</span><span class="slash-desc">${sc.desc}</span>`;
+    item.addEventListener('click', () => {
+      textInput.value = sc.cmd + ' ';
+      slashMenu.classList.remove('active');
+      textInput.focus();
+    });
+    slashMenu.appendChild(item);
+  });
+
+  // ── DOM refs ──────────────────────────────────────────────────────────────
+
+  const modelSelect   = panel.querySelector('#model-select');
+  const chat          = panel.querySelector('#chat');
+  const textInput     = panel.querySelector('#text-input');
+  const btnSend       = panel.querySelector('#btn-send');
+  const btnSS         = panel.querySelector('#btn-screenshot');
+  const btnPage       = panel.querySelector('#btn-page');
+  const ssStatus      = panel.querySelector('#ss-status');
+  const selIndicator  = panel.querySelector('#selection-indicator');
+  const selText       = panel.querySelector('.sel-text');
+  const selClear      = panel.querySelector('.sel-clear');
+  const convoList     = panel.querySelector('#convo-list');
+  const btnConvos     = panel.querySelector('#btn-convos');
+
+  // ── Model selector ────────────────────────────────────────────────────────
 
   function populateModels(models) {
     activeModels = models;
@@ -360,20 +144,13 @@
 
   chrome.storage.local.get(['provider', 'ollamaModel'], ({ provider, ollamaModel }) => {
     if (provider === 'ollama') {
-      // Show saved model immediately as fallback, then fetch live list
       const fallback = ollamaModel || 'llama3.2';
       populateModels([{ label: `Ollama — ${fallback}`, id: fallback }]);
       getPort().postMessage({ type: 'FETCH_OLLAMA_MODELS' });
     }
   });
 
-  const chat      = panel.querySelector('#chat');
-  const textInput = panel.querySelector('#text-input');
-  const btnSend   = panel.querySelector('#btn-send');
-  const btnSS     = panel.querySelector('#btn-screenshot');
-  const ssStatus  = panel.querySelector('#ss-status');
-
-  // ── State ──────────────────────────────────────────────────────────────────
+  // ── State ─────────────────────────────────────────────────────────────────
 
   let port = null;
   let history = [];
@@ -383,8 +160,23 @@
   let accumulated = '';
   let currentContextEl = null;
   let accumulatedContext = '';
+  let currentSelection = '';
+  let pageContextEnabled = false;
+  let currentConvoId = null;
+  let showingConvoList = false;
 
-  // ── Port ───────────────────────────────────────────────────────────────────
+  // Load defaults
+  chrome.storage.local.get(['pageContextDefault', 'activeConversationId'], async (res) => {
+    pageContextEnabled = !!res.pageContextDefault;
+    if (pageContextEnabled) btnPage.classList.add('active');
+    // Restore active conversation
+    if (res.activeConversationId) {
+      const convo = await S.loadConversation(res.activeConversationId);
+      if (convo) restoreConversation(convo);
+    }
+  });
+
+  // ── Port ──────────────────────────────────────────────────────────────────
 
   function getPort() {
     if (!port || port._disconnected) {
@@ -400,23 +192,29 @@
     switch (msg.type) {
       case 'CHUNK':
         accumulated += msg.text;
-        if (currentAIEl) currentAIEl.textContent = accumulated;
-        scrollBottom();
+        if (currentAIEl) {
+          // Preserve copy button
+          const copyBtn = currentAIEl.querySelector('.copy-btn');
+          currentAIEl.textContent = accumulated;
+          if (copyBtn) currentAIEl.appendChild(copyBtn);
+        }
+        S.scrollBottom(chat);
         break;
       case 'DONE':
         if (accumulated) history.push({ role: 'assistant', content: accumulated });
         isStreaming = false;
         btnSend.disabled = false;
         currentAIEl = null;
+        saveCurrentConversation();
         break;
       case 'ERROR':
-        addMsg('error', 'Error: ' + msg.error);
+        S.addMsg(chat, 'error', 'Error: ' + msg.error);
         isStreaming = false;
         btnSend.disabled = false;
         currentAIEl = null;
         break;
       case 'NO_KEY':
-        addMsg('error', 'No API key set. Click the extension icon to open settings.');
+        S.addMsg(chat, 'error', 'No API key set. Click the extension icon to open settings.');
         isStreaming = false;
         btnSend.disabled = false;
         currentAIEl = null;
@@ -427,17 +225,16 @@
         }
         break;
       case 'OLLAMA_MODELS_ERROR':
-        // keep existing fallback model in the dropdown
         break;
       case 'CONTEXT_CHUNK':
         if (!currentContextEl) {
-          currentContextEl = createContextEl();
+          currentContextEl = S.createContextEl();
           accumulatedContext = '';
           chat.appendChild(currentContextEl);
         }
         accumulatedContext += msg.text;
         currentContextEl.querySelector('.ctx-body').textContent = accumulatedContext;
-        scrollBottom();
+        S.scrollBottom(chat);
         break;
       case 'CONTEXT_DONE':
         currentContextEl = null;
@@ -446,56 +243,268 @@
         pendingScreenshot = msg.data;
         ssStatus.textContent = '✓ Screenshot attached';
         ssStatus.classList.add('attached');
-        addMsg('system', 'Screenshot captured — ask your question.');
+        S.addMsg(chat, 'system', 'Screenshot captured — ask your question.');
         btnSend.disabled = false;
         break;
       case 'SCREENSHOT_ERROR':
-        addMsg('error', 'Screenshot failed: ' + msg.error);
+        S.addMsg(chat, 'error', 'Screenshot failed: ' + msg.error);
         btnSend.disabled = false;
         break;
     }
   }
 
-  // ── Chat helpers ───────────────────────────────────────────────────────────
+  // ── Selection awareness ───────────────────────────────────────────────────
 
-  function addMsg(type, text) {
-    const el = document.createElement('div');
-    el.className = 'msg-' + type;
-    el.textContent = text;
-    chat.appendChild(el);
-    scrollBottom();
-    return el;
-  }
+  let selectionTimer = null;
 
-  function scrollBottom() {
-    chat.scrollTop = chat.scrollHeight;
-  }
-
-  function createContextEl() {
-    const el = document.createElement('div');
-    el.className = 'msg-context';
-    el.innerHTML = `
-      <div class="ctx-header">🔍 Context <span class="ctx-chevron">▾</span></div>
-      <div class="ctx-body"></div>
-    `;
-    el.querySelector('.ctx-header').addEventListener('click', () => {
-      el.classList.toggle('ctx-collapsed');
-      el.querySelector('.ctx-chevron').textContent =
-        el.classList.contains('ctx-collapsed') ? '▸' : '▾';
+  function setupSelectionRelay() {
+    let relayPort = null;
+    function getRelayPort() {
+      if (!relayPort || relayPort._disconnected) {
+        try {
+          relayPort = chrome.runtime.connect({ name: 'ai-bubble' });
+          relayPort._disconnected = false;
+          relayPort.onDisconnect.addListener(() => { relayPort._disconnected = true; });
+        } catch { return null; }
+      }
+      return relayPort;
+    }
+    document.addEventListener('selectionchange', () => {
+      clearTimeout(selectionTimer);
+      selectionTimer = setTimeout(() => {
+        const sel = window.getSelection().toString().trim();
+        const p = getRelayPort();
+        if (p) p.postMessage({ type: 'SELECTION_CHANGED', text: sel });
+      }, 300);
     });
-    return el;
   }
 
-  // ── Actions ────────────────────────────────────────────────────────────────
+  document.addEventListener('selectionchange', () => {
+    clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(() => {
+      const sel = window.getSelection().toString().trim();
+      currentSelection = sel;
+      updateSelectionUI();
+      // Relay to side panel via port
+      try { getPort().postMessage({ type: 'SELECTION_CHANGED', text: sel }); } catch {}
+    }, 300);
+  });
+
+  function updateSelectionUI() {
+    if (currentSelection) {
+      selText.textContent = currentSelection.length > 60
+        ? currentSelection.slice(0, 60) + '…'
+        : currentSelection;
+      selIndicator.classList.add('active');
+      writingActionsEl.classList.add('active');
+    } else {
+      selIndicator.classList.remove('active');
+      writingActionsEl.classList.remove('active');
+    }
+  }
+
+  selClear.addEventListener('click', () => {
+    currentSelection = '';
+    updateSelectionUI();
+  });
+
+  // ── Slash command autocomplete ────────────────────────────────────────────
+
+  textInput.addEventListener('input', () => {
+    autoResize();
+    const val = textInput.value;
+    if (val.startsWith('/') && val.length <= 15 && !val.includes('\n')) {
+      const matches = S.SLASH_COMMANDS.filter(c => c.cmd.startsWith(val.toLowerCase()));
+      if (matches.length > 0 && val !== '/') {
+        slashMenu.classList.add('active');
+      } else if (val === '/') {
+        slashMenu.classList.add('active');
+      } else {
+        slashMenu.classList.remove('active');
+      }
+    } else {
+      slashMenu.classList.remove('active');
+    }
+  });
+
+  // ── Conversation persistence ──────────────────────────────────────────────
+
+  function getConvoTitle() {
+    const firstUser = history.find(m => m.role === 'user');
+    if (!firstUser) return 'New conversation';
+    const text = Array.isArray(firstUser.content)
+      ? (firstUser.content.find(b => b.type === 'text')?.text || 'Screenshot conversation')
+      : (firstUser.content || 'New conversation');
+    return text.slice(0, 50);
+  }
+
+  async function saveCurrentConversation() {
+    if (history.length === 0) return;
+    if (!currentConvoId) currentConvoId = S.generateId();
+    await S.saveConversation(currentConvoId, {
+      title: getConvoTitle(),
+      createdAt: (await S.loadConversation(currentConvoId))?.createdAt || Date.now(),
+      messages: history,
+      pageUrl: window.location.href,
+      pageTitle: document.title,
+    });
+  }
+
+  function restoreConversation(convo) {
+    currentConvoId = convo.id;
+    history = convo.messages || [];
+    chat.innerHTML = '';
+    for (const msg of history) {
+      if (msg.role === 'user') {
+        const text = Array.isArray(msg.content)
+          ? (msg.content.find(b => b.type === 'text')?.text || '(screenshot)')
+          : (msg.content || '');
+        S.addMsg(chat, 'user', text);
+      } else {
+        S.addMsg(chat, 'ai', typeof msg.content === 'string' ? msg.content : '');
+      }
+    }
+  }
+
+  async function showConversationList() {
+    showingConvoList = true;
+    convoList.classList.add('active');
+    convoList.innerHTML = '';
+
+    const newBtn = document.createElement('div');
+    newBtn.className = 'convo-new';
+    newBtn.textContent = '+ New conversation';
+    newBtn.addEventListener('click', () => {
+      startNewConversation();
+      hideConversationList();
+    });
+    convoList.appendChild(newBtn);
+
+    const convos = await S.listConversations();
+    for (const c of convos) {
+      const item = document.createElement('div');
+      item.className = 'convo-item';
+      const ago = formatTimeAgo(c.updatedAt);
+      item.innerHTML = `
+        <span class="convo-title">${escapeHtml(c.title)}</span>
+        <span class="convo-meta">${c.messageCount} msgs · ${ago}</span>
+        <button class="convo-delete" title="Delete">\u{1F5D1}</button>
+      `;
+      item.querySelector('.convo-title').addEventListener('click', async () => {
+        const convo = await S.loadConversation(c.id);
+        if (convo) restoreConversation(convo);
+        hideConversationList();
+      });
+      item.querySelector('.convo-delete').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await S.deleteConversation(c.id);
+        if (currentConvoId === c.id) startNewConversation();
+        showConversationList(); // refresh list
+      });
+      convoList.appendChild(item);
+    }
+
+    if (convos.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'msg-system';
+      empty.textContent = 'No saved conversations';
+      convoList.appendChild(empty);
+    }
+  }
+
+  function hideConversationList() {
+    showingConvoList = false;
+    convoList.classList.remove('active');
+  }
+
+  function startNewConversation() {
+    currentConvoId = null;
+    history = [];
+    pendingScreenshot = null;
+    ssStatus.textContent = 'No screenshot attached';
+    ssStatus.classList.remove('attached');
+    chat.innerHTML = '';
+    S.addMsg(chat, 'system', 'New conversation started.');
+  }
+
+  function formatTimeAgo(ts) {
+    const diff = Date.now() - ts;
+    if (diff < 60000) return 'just now';
+    if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+    if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+    return Math.floor(diff / 86400000) + 'd ago';
+  }
+
+  function escapeHtml(str) {
+    const el = document.createElement('span');
+    el.textContent = str;
+    return el.innerHTML;
+  }
+
+  btnConvos.addEventListener('click', () => {
+    if (showingConvoList) hideConversationList();
+    else showConversationList();
+  });
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+
+  function sendPrompt(text) {
+    if (isStreaming) return;
+    S.addMsg(chat, 'user', text.length > 200 ? text.slice(0, 200) + '…' : text);
+    textInput.value = '';
+    autoResize();
+
+    const content = [{ type: 'text', text }];
+    history.push({ role: 'user', content });
+    isStreaming = true;
+    btnSend.disabled = true;
+    accumulated = '';
+    currentAIEl = S.addMsg(chat, 'ai', '');
+
+    const sendMsg = {
+      type: 'SEND',
+      messages: history,
+      model: activeModels[parseInt(modelSelect.value)]?.id || activeModels[0]?.id,
+    };
+
+    if (pageContextEnabled) {
+      sendMsg.pageContext = S.extractPageContent();
+    }
+
+    getPort().postMessage(sendMsg);
+  }
 
   function onSend() {
     if (isStreaming) return;
     const text = textInput.value.trim();
     if (!text && !pendingScreenshot) return;
 
-    addMsg('user', text || '(screenshot)');
+    // Check for slash commands
+    const slashCmd = S.parseSlashCommand(text);
+    if (slashCmd) {
+      slashMenu.classList.remove('active');
+      const ctx = S.extractPageContent();
+      const args = slashCmd.args || currentSelection || '';
+      const prompt = slashCmd.promptFn(args, ctx);
+      sendPrompt(prompt);
+      currentSelection = '';
+      updateSelectionUI();
+      return;
+    }
+
+    // Build message text, prepending selection if present
+    let msgText = text;
+    if (currentSelection && text) {
+      msgText = `[Selected text from page:]\n${currentSelection}\n\n${text}`;
+    } else if (!text && currentSelection) {
+      msgText = currentSelection;
+    }
+
+    const displayText = text || '(screenshot)';
+    S.addMsg(chat, 'user', displayText);
     textInput.value = '';
     autoResize();
+    slashMenu.classList.remove('active');
 
     const content = [];
     if (pendingScreenshot) {
@@ -507,19 +516,27 @@
       ssStatus.textContent = 'No screenshot attached';
       ssStatus.classList.remove('attached');
     }
-    if (text) content.push({ type: 'text', text });
+    if (msgText) content.push({ type: 'text', text: msgText });
 
     history.push({ role: 'user', content });
     isStreaming = true;
     btnSend.disabled = true;
     accumulated = '';
-    currentAIEl = addMsg('ai', '');
+    currentAIEl = S.addMsg(chat, 'ai', '');
 
-    getPort().postMessage({
+    const sendMsg = {
       type: 'SEND',
       messages: history,
-      model: activeModels[parseInt(modelSelect.value)].id,
-    });
+      model: activeModels[parseInt(modelSelect.value)]?.id || activeModels[0]?.id,
+    };
+
+    if (pageContextEnabled) {
+      sendMsg.pageContext = S.extractPageContent();
+    }
+
+    getPort().postMessage(sendMsg);
+    currentSelection = '';
+    updateSelectionUI();
   }
 
   function onScreenshot() {
@@ -531,13 +548,19 @@
   }
 
   function onClear() {
-    history = [];
-    pendingScreenshot = null;
-    ssStatus.textContent = 'No screenshot attached';
-    ssStatus.classList.remove('attached');
-    chat.innerHTML = '';
-    addMsg('system', 'Conversation cleared.');
+    saveCurrentConversation();
+    startNewConversation();
   }
+
+  // ── Page context toggle ───────────────────────────────────────────────────
+
+  btnPage.addEventListener('click', () => {
+    pageContextEnabled = !pageContextEnabled;
+    btnPage.classList.toggle('active', pageContextEnabled);
+    chrome.storage.local.set({ pageContextDefault: pageContextEnabled });
+  });
+
+  // ── Auto resize textarea ──────────────────────────────────────────────────
 
   let textareaExtraH = 0;
 
@@ -558,7 +581,7 @@
     }
   }
 
-  // ── Bubble drag ────────────────────────────────────────────────────────────
+  // ── Bubble drag ───────────────────────────────────────────────────────────
 
   let dragging = false, ox = 0, oy = 0, didDrag = false;
   let bx = window.innerWidth - 24 - 56;
@@ -651,12 +674,35 @@
     panel.classList.toggle('hidden');
     if (!panel.classList.contains('hidden')) {
       applyPanelPos();
-      if (chat.children.length === 0) addMsg('system', 'Ready. Screenshot or ask anything.');
+      if (chat.children.length === 0) S.addMsg(chat, 'system', 'Ready. Screenshot, read page, or ask anything.');
       textInput.focus();
     }
   });
 
-  // ── Event wiring ───────────────────────────────────────────────────────────
+  // ── Message listener (context menu actions, toggle) ───────────────────────
+
+  function setupMessageListener(panelEl, chatEl, inputEl) {
+    chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+      if (msg.type === 'TOGGLE_PANEL') {
+        if (panelEl) panelEl.classList.toggle('hidden');
+        return;
+      }
+      if (msg.type === 'CONTEXT_MENU_ACTION') {
+        if (panelEl) {
+          panelEl.classList.remove('hidden');
+          applyPanelPos();
+        }
+        if (msg.text) {
+          sendPrompt(msg.text);
+        }
+        return;
+      }
+    });
+  }
+
+  setupMessageListener(panel, chat, textInput);
+
+  // ── Event wiring ──────────────────────────────────────────────────────────
 
   panel.querySelector('#btn-close').addEventListener('click', () => panel.classList.add('hidden'));
   panel.querySelector('#btn-clear').addEventListener('click', onClear);
@@ -668,8 +714,10 @@
       e.preventDefault();
       onSend();
     }
+    if (e.key === 'Escape') {
+      slashMenu.classList.remove('active');
+    }
   });
-  textInput.addEventListener('input', autoResize);
 
   // Initial position
   applyBubblePos();

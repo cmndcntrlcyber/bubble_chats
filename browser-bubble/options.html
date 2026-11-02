@@ -72,29 +72,42 @@
     .info { font-size: 12px; color: #a6adc8; line-height: 1.6; }
     .info a { color: #fab387; }
     .hidden { display: none !important; }
-    /* Provider selector pill */
-    #provider-row { display: flex; gap: 8px; margin-bottom: 20px; }
-    #provider-row button {
+    /* Provider / mode selector pills */
+    .pill-row { display: flex; gap: 8px; margin-bottom: 20px; }
+    .pill-row button {
       flex: 1; padding: 8px; border-radius: 8px; font-size: 12px; font-weight: 600;
       border: 1px solid rgba(255,255,255,0.1);
       background: #2e2e4a; color: #a6adc8; cursor: pointer;
     }
-    #provider-row button.active { background: #fab387; color: #1c1c2e; border-color: #fab387; }
+    .pill-row button.active { background: #fab387; color: #1c1c2e; border-color: #fab387; }
     /* Ollama model fetch row */
     #ollama-fetch-row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 12px; }
     #ollama-fetch-row select { flex: 1; margin-bottom: 0; }
     #btn-fetch-models { flex: none; width: auto; padding: 10px 14px; font-size: 12px; }
+    /* Convo management */
+    .convo-stats { font-size: 12px; color: #a6adc8; margin-bottom: 12px; }
+    /* Shortcuts info */
+    .shortcut-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 12px; }
+    .shortcut-row .key { color: #89b4fa; font-family: monospace; }
+    .shortcut-row .desc { color: #a6adc8; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="logo">◉</div>
+    <div class="logo">&#x25C9;</div>
     <h1>AI Bubble</h1>
-    <p class="subtitle">Floating AI assistant for your browser</p>
+    <p class="subtitle">AI assistant for your browser</p>
+
+    <!-- Display mode -->
+    <label>Display Mode</label>
+    <div class="pill-row" id="mode-row">
+      <button id="btn-mode-bubble" class="active" data-mode="bubble">Floating Bubble</button>
+      <button id="btn-mode-sidepanel" data-mode="sidepanel">Side Panel</button>
+    </div>
 
     <!-- Provider selector -->
     <label>LLM Provider</label>
-    <div id="provider-row">
+    <div class="pill-row" id="provider-row">
       <button id="btn-provider-anthropic" class="active" data-provider="anthropic">Anthropic (Claude)</button>
       <button id="btn-provider-ollama" data-provider="ollama">Ollama (local)</button>
       <button id="btn-provider-huggingface" data-provider="huggingface">HF (CF Worker)</button>
@@ -161,9 +174,20 @@
 
     <hr class="divider">
 
+    <!-- Page context default -->
+    <label>Page Context <span style="font-weight:400;color:#a6adc8">(default)</span></label>
+    <p class="hint">Auto-include page content with messages. Can also be toggled per-message in the chat panel.</p>
+    <div class="row" style="margin-bottom:0">
+      <button id="btn-page-toggle" class="btn-action" style="flex:none;width:auto;padding:8px 16px;font-size:12px">Enable</button>
+      <span id="page-toggle-status" style="align-self:center;font-size:12px;color:#a6adc8;margin-left:8px">Disabled</span>
+    </div>
+    <div id="page-status" class="status-line"></div>
+
+    <hr class="divider">
+
     <!-- Contextualizing agent toggle (all providers) -->
     <label>Contextualizing Agent <span style="font-weight:400;color:#a6adc8">(optional)</span></label>
-    <p class="hint">Runs a second open-source model in parallel, showing a collapsible "🔍 Context" annotation beneath each reply. Requires HF Worker URL + secret configured above.</p>
+    <p class="hint">Runs a second open-source model in parallel, showing a collapsible "&#x1F50D; Context" annotation beneath each reply. Requires HF Worker URL + secret configured above.</p>
     <div class="row" style="margin-bottom:0">
       <button id="btn-context-toggle" class="btn-action" style="flex:none;width:auto;padding:8px 16px;font-size:12px">Enable</button>
       <span id="context-toggle-status" style="align-self:center;font-size:12px;color:#a6adc8;margin-left:8px">Disabled</span>
@@ -184,9 +208,37 @@
     <div id="tavily-status" class="status-line"></div>
 
     <hr class="divider">
+
+    <!-- Keyboard shortcuts -->
+    <label>Keyboard Shortcuts</label>
+    <div class="shortcut-row">
+      <span class="desc">Toggle panel</span>
+      <span class="key">Ctrl+Shift+B</span>
+    </div>
+    <div class="shortcut-row">
+      <span class="desc">Quick summarize</span>
+      <span class="key">Ctrl+Shift+S</span>
+    </div>
+    <p class="hint" style="margin-top:8px">
+      Customize at <strong>chrome://extensions/shortcuts</strong>
+    </p>
+
+    <hr class="divider">
+
+    <!-- Conversation management -->
+    <label>Conversations</label>
+    <p class="convo-stats" id="convo-stats">Loading...</p>
+    <div class="row">
+      <button id="convo-export" class="btn-action">Export All</button>
+      <button id="convo-clear-all" class="btn-danger">Clear All</button>
+    </div>
+    <div id="convo-status" class="status-line"></div>
+
+    <hr class="divider">
     <p class="info">
-      The bubble appears on every page. Click <strong>◉</strong> to open the chat panel.<br><br>
-      <strong>Screenshot</strong> captures the visible tab and attaches it to your next message.<br><br>
+      The bubble appears on every page (or use the Side Panel).<br>
+      Right-click selected text for quick AI actions.<br>
+      Type <strong>/</strong> in the chat for slash commands.<br><br>
       Claude keys: <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a><br>
       Ollama docs: <a href="https://ollama.com" target="_blank">ollama.com</a><br>
       Tavily keys: <a href="https://tavily.com" target="_blank">tavily.com</a>

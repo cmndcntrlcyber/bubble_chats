@@ -48,15 +48,14 @@ Implement CI workflows for:
 
 ### Conversation Persistence
 
-Currently, all components lose chat history when the window/panel is closed. Adding conversation persistence would require:
+~~Currently, all components lose chat history when the window/panel is closed.~~ **Resolved for browser-bubble in v2.0:** conversations auto-save to `chrome.storage.local` with list/switch/delete/export. Still needed for:
 
-- Browser extension: store in `chrome.storage.local` or IndexedDB
 - Desktop apps: store in local SQLite or JSON file
 - Website widget: store in `localStorage` or server-side per-session
 
 ### Multi-Turn Context Management
 
-No component currently manages context window limits. Long conversations will eventually exceed the model's context window and fail. Implementing token counting and context compaction (summarization or sliding window) would prevent this.
+No component currently manages context window limits. Long conversations will eventually exceed the model's context window and fail. Implementing token counting and context compaction (summarization or sliding window) would prevent this. (Note: browser-bubble v2.0 added page content truncation to 12K chars and conversation persistence with auto-prune, but does not yet compact message history.)
 
 ### Mobile Platform Support
 
@@ -74,6 +73,7 @@ The floating bubble UX pattern translates well to mobile. Options include:
 | 2026-04-08 | +Ollama +Tauri | Added Ollama local LLM support; added Windows Tauri desktop client |
 | 2026-06-02 | +HuggingFace | Integrated HuggingFace inference via Cloudflare Worker proxy across browser, Linux, and website clients |
 | 2026-06-15 | Security fix | Removed exposed Cloudflare account ID; gitignored `wrangler.toml` |
+| 2026-10-28 | v2.0 browser-bubble | Page reading, text selection, writing assistance, context menus, slash commands, keyboard shortcuts, conversation persistence, Chrome side panel, PDF extraction |
 
 ## See Also
 
